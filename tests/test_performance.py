@@ -3,6 +3,7 @@ import time
 from pathlib import Path
 
 import anyio
+import psutil
 import pytest
 
 from resourcera import ResourceConfig, ResourceManager
@@ -57,6 +58,56 @@ async def test_cached_snapshot_and_admission_latency(
             assert percentile(snapshot_times, 0.99) < 0.005
             assert percentile(admission_times, 0.95) < 0.15
             assert percentile(admission_times, 0.99) < 0.3
+
+
+@pytest.mark.anyio
+@pytest.mark.benchmark
+async def test_sampling_and_cached_snapshot_footprint(anyio_backend: str) -> None:
+    process = psutil.Process()
+
+    def process_resources() -> tuple[int, int]:
+        return process.memory_info().rss, process.num_threads()
+
+    baseline_rss, baseline_threads = await anyio.to_thread.run_sync(process_resources)
+    baseline_tasks = len(anyio.get_running_tasks())
+    config = ResourceConfig(cpu_budget_fraction=1, cpu_memory_interval_seconds=60)
+    async with ResourceManager(config) as manager:
+        snapshot = await manager.snapshot()
+        overhead = snapshot.overhead
+        assert overhead.cpu_seconds.value is not None
+        assert overhead.managed_state_bytes.value is not None
+        assert 0 < overhead.managed_state_bytes.value < config.managed_state_budget_bytes
+        assert overhead.sampling_duration_seconds.value is not None
+        assert 0 < overhead.sampling_duration_seconds.value < config.provider_timeout_seconds
+        assert overhead.provider_duration_seconds.value is not None
+        assert 0 < overhead.provider_duration_seconds.value < config.provider_timeout_seconds + 1
+
+        started = time.perf_counter()
+        with anyio.fail_after(config.provider_timeout_seconds * 3 + 5):
+            await manager.refresh_accelerators()
+        provider_seconds = time.perf_counter() - started
+
+        before_rss, before_threads = await anyio.to_thread.run_sync(process_resources)
+        before_tasks = len(anyio.get_running_tasks())
+        cached = await manager.snapshot()
+        for _ in range(500):
+            assert await manager.snapshot() is cached
+        after_rss, after_threads = await anyio.to_thread.run_sync(process_resources)
+        after_tasks = len(anyio.get_running_tasks())
+
+        print(
+            f"{anyio_backend} sampling={overhead.sampling_duration_seconds.value:.3f}s "
+            f"inventory={overhead.provider_duration_seconds.value:.3f}s "
+            f"accelerator refresh={provider_seconds:.3f}s "
+            f"attributed CPU={overhead.cpu_seconds.value:.3f}s "
+            f"managed={overhead.managed_state_bytes.value}B "
+            f"RSS delta={after_rss - baseline_rss}B "
+            f"thread delta={after_threads - baseline_threads} "
+            f"visible task delta={after_tasks - baseline_tasks}"
+        )
+        assert after_rss - before_rss < 16 * 1024 * 1024
+        assert after_threads - before_threads <= 2
+        assert after_tasks - before_tasks <= 2
 
 
 @pytest.mark.anyio

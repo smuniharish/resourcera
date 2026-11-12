@@ -18,7 +18,9 @@ probe can cross a threshold before feedback is applied. These targets do not
 preempt arbitrary native code, bound total application CPU, or measure opaque native
 allocations perfectly. Failed/terminated child CPU and library-attributable disk and
 network bytes can be unavailable. Shared worker threads are not exclusively owned
-by the library.
+by the library. The owned-task metric counts directly managed runtime tasks at
+sampling time, excluding refresh-engine internals and application-owned calls; the
+owned-thread metric counts dedicated bridge threads, not shared workers.
 
 An uninterruptible system call can outlive a timeout. Its worker remains bounded
 and is not replaced indefinitely. Vendor probes are isolated in terminable child

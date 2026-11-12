@@ -43,6 +43,13 @@ are regression checks, not service-level guarantees. They use a 100% CPU budget
 to measure individual operations, rather than asserting sustained default-budget
 throughput.
 
+The benchmark suite also reports sampling and provider durations, attributable CPU,
+estimated managed-state bytes, process RSS and thread changes, and tasks visible to
+the calling event loop. It checks that 500 cached snapshot reads do not cause
+unbounded memory, thread, or task growth. RSS and thread counts include the whole
+process, and Trio's separate asyncio bridge is not included in its visible task
+count; these observations are not precise library-only attribution.
+
 One Windows/Python 3.15 run measured process-local admission p50/p95/p99 of
 0.50/0.66/0.72 ms on asyncio and 2.65/3.04/3.26 ms on Trio; SQLite admission
 measured 24.06/30.22/32.82 ms and 33.56/38.87/46.41 ms respectively. Results

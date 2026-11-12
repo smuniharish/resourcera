@@ -130,6 +130,7 @@ class _Runtime:
         self._optional_after = 0.0
         self._limiter: anyio.CapacityLimiter | None = None
         self._runner: asyncio.Task[None] | None = None
+        self._owned_tasks = 0
         self._ready: anyio.Event | None = None
         self._stop: anyio.Event | None = None
         self._wake: anyio.Event | None = None
@@ -171,7 +172,7 @@ class _Runtime:
             on_refresh=self._inventory_changed,
             on_cost=self._inventory_cost,
         )
-        self._runner = asyncio.create_task(self._run(), name="resourcera-runtime")
+        self._runner = asyncio.create_task(self._track_task(self._run), name="resourcera-runtime")
         await self._ready.wait()
         if self._startup_error is not None:
             raise ProviderError(f"resource manager failed to start: {self._startup_error}") from (
@@ -179,6 +180,13 @@ class _Runtime:
             )
         if self._snapshot is None:
             raise ProviderError("resource manager stopped before its first sample")
+
+    async def _track_task(self, operation: Callable[[], Awaitable[None]]) -> None:
+        self._owned_tasks += 1
+        try:
+            await operation()
+        finally:
+            self._owned_tasks -= 1
 
     async def _run(self) -> None:
         assert self._inventory is not None
@@ -190,12 +198,12 @@ class _Runtime:
             self._inventory_event = anyio.Event()
             await self.refresh_accelerators()
             async with anyio.create_task_group() as tasks:
-                tasks.start_soon(self._sample_loop)
-                tasks.start_soon(self._accelerator_loop)
+                tasks.start_soon(self._track_task, self._sample_loop)
+                tasks.start_soon(self._track_task, self._accelerator_loop)
                 assert self._coordinator is not None
-                tasks.start_soon(self._coordinator.supervise)
+                tasks.start_soon(self._track_task, self._coordinator.supervise)
                 if sys.platform == "linux":
-                    tasks.start_soon(self._watch_links)
+                    tasks.start_soon(self._track_task, self._watch_links)
                 await self._stop.wait()
                 tasks.cancel_scope.cancel()
         except Exception as exc:
@@ -822,7 +830,7 @@ class _Runtime:
                 ),
             ),
             owned_tasks=metric(
-                6 if sys.platform == "linux" else 5,
+                self._owned_tasks,
                 "tasks",
                 "resourcera",
                 Scope.PROCESS,
@@ -830,8 +838,8 @@ class _Runtime:
                 freshness,
                 status=MetricStatus.ESTIMATED,
                 detail=(
-                    "Runtime, sampler, accelerator watcher, scheduler, lease supervisor, "
-                    "and Linux link watcher."
+                    "Live directly owned runtime tasks; excludes refresh-engine internals "
+                    "and application-owned calls."
                 ),
             ),
             owned_threads=metric(

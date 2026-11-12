@@ -76,6 +76,25 @@ def anyio_backend(request: pytest.FixtureRequest) -> str:
 
 
 @pytest.mark.anyio
+async def test_owned_task_count_tracks_a_finished_background_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = ResourceConfig(cpu_budget_fraction=1, cpu_memory_interval_seconds=60)
+    async with ResourceManager(config) as manager:
+        running = (await manager.snapshot()).overhead.owned_tasks.value
+
+    async def exit_immediately(runtime: object) -> None:
+        pass
+
+    monkeypatch.setattr("resourcera.manager._Runtime._accelerator_loop", exit_immediately)
+    async with ResourceManager(config) as manager:
+        finished = (await manager.snapshot()).overhead.owned_tasks.value
+
+    assert running is not None
+    assert finished == running - 1
+
+
+@pytest.mark.anyio
 async def test_budget_exhaustion_refuses_new_optional_probes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
