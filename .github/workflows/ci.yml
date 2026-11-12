@@ -105,7 +105,7 @@ jobs:
       - run: uv run --locked --group docs zensical build --strict
       - run: uv run --locked python scripts/check_site_links.py
       - run: node scripts/render-diagrams.mjs --check
-      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm install --global --ignore-scripts --no-audit --no-fund @mermaid-js/mermaid-cli@12.2.0
       - name: Validate Mermaid sources with pinned renderer
         env:
           PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
@@ -113,7 +113,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/resourcera-diagrams"
           for source in diagrams/*.mmd; do
             name="$(basename "$source" .mmd)"
-            ./node_modules/.bin/mmdc -i "$source" -o "$RUNNER_TEMP/resourcera-diagrams/$name.png" -c diagrams/mermaid-config.json -p diagrams/ci-puppeteer.json -b white -s 2
+            mmdc -i "$source" -o "$RUNNER_TEMP/resourcera-diagrams/$name.png" -c diagrams/mermaid-config.json -p diagrams/ci-puppeteer.json -b white -s 2
           done
 
   package:

@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title description">
+  <title id="title">RESOURCERA logo</title>
+  <desc id="description">An indigo resource gauge with a green indicator.</desc>
+  <defs>
+    <linearGradient id="background" x1="13" y1="8" x2="114" y2="120" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4846c8"/>
+      <stop offset="1" stop-color="#1b245f"/>
+    </linearGradient>
+    <linearGradient id="indicator" x1="48" y1="88" x2="94" y2="45" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4ce0b3"/>
+      <stop offset="1" stop-color="#a1f2c6"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="33" fill="url(#background)"/>
+  <path d="M29 81a38 38 0 1 1 70 0" fill="none" stroke="#fff" stroke-linecap="round" stroke-width="9"/>
+  <path d="M41 74a24 24 0 0 1 18-31" fill="none" stroke="#aab9ff" stroke-linecap="round" stroke-width="5"/>
+  <path d="m58 80 27-27-12 36a10 10 0 1 1-15-9Z" fill="url(#indicator)"/>
+  <circle cx="64" cy="85" r="4" fill="#19275e"/>
+</svg>

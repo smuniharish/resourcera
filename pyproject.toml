@@ -5,7 +5,7 @@ build-backend = "uv_build"
 [project]
 name = "resourcera"
 version = "0.1.0"
-description = "Resource intelligence and adaptive capacity for Python applications."
+description = "Resource intelligence, capacity estimation, and resource-aware concurrency for Python applications."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
@@ -82,10 +82,9 @@ source-include = [
   "diagrams/**",
   "docs/**",
   "examples/**",
-  "package-lock.json",
-  "package.json",
   "scripts/**",
   "skills/**",
+  "skills.sh.json",
   "tests/**",
   "uv.lock",
   "zensical.toml",

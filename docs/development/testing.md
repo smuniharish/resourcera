@@ -14,15 +14,16 @@ uv run python scripts/check_site_links.py
 node scripts/render-diagrams.mjs --check
 ```
 
-To regenerate diagrams, install the pinned renderer locally with
-`npm ci --ignore-scripts`, set `PUPPETEER_EXECUTABLE_PATH` to an existing
-Chromium or Edge executable, and run `npm run diagrams`. Commit the updated
-PNGs and manifest together with their Mermaid sources. `npm run check:diagrams`
-checks source, renderer, configuration, image hashes, and documentation references;
-the documentation CI job also renders each source to verify Mermaid syntax.
-The isolated CI runner disables the browser sandbox because hosted Linux images may
-not support it; it has read-only repository permissions and no publishing secrets.
-No browser or renderer is installed globally by these commands.
+The diagram check needs Node.js but not an installed renderer. To regenerate
+diagrams, install the pinned renderer globally with
+`npm install --global --ignore-scripts @mermaid-js/mermaid-cli@12.2.0`, set
+`PUPPETEER_EXECUTABLE_PATH` to an existing Chromium or Edge executable, and run
+`node scripts/render-diagrams.mjs`. Commit the updated PNGs and manifest together
+with their Mermaid sources. The `--check` command checks source, renderer version,
+configuration, image hashes, and documentation references; the documentation CI
+job also renders each source to verify Mermaid syntax. The isolated CI runner
+disables the browser sandbox because hosted Linux images may not support it; it
+has read-only repository permissions and no publishing secrets.
 
 Tests exercise asyncio and Trio, counter warm-up and reset, cgroup hierarchy,
 missing/partial providers, budget thresholds, admission races, cancellation,

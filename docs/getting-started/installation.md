@@ -1,6 +1,7 @@
 # Installation
 
-Python 3.12 or newer is required. From a checkout:
+Python 3.12, 3.13, 3.14, and 3.15 are supported (3.12 or newer is required).
+From a checkout:
 
 ```shell
 python -m pip install .

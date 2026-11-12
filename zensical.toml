@@ -1,20 +1,23 @@
 [project]
 site_name = "RESOURCERA"
-site_description = "Resource intelligence and resource-aware concurrency for Python."
+site_description = "Resource intelligence, capacity estimation, and resource-aware concurrency for Python applications."
 site_url = "https://resourcera.readthedocs.io/en/latest/"
 site_author = "S MUNI HARISH"
 repo_name = "smuniharish/resourcera"
 repo_url = "https://github.com/smuniharish/resourcera"
 edit_uri = "edit/main/docs/"
 copyright = "Copyright RESOURCERA contributors. Apache License 2.0."
+extra_css = ["stylesheets/extra.css"]
 nav = [
   { "Home" = "index.md" },
   { "Getting started" = [
+    "getting-started/index.md",
     { "Installation" = "getting-started/installation.md" },
     { "Quickstart" = "getting-started/quickstart.md" },
     { "Configuration" = "getting-started/configuration.md" },
   ] },
   { "User guide" = [
+    "guide/index.md",
     { "Architecture and scopes" = "guide/architecture.md" },
     { "Metrics and freshness" = "guide/metrics.md" },
     { "CPU, memory, and containers" = "guide/cpu-memory.md" },
@@ -29,7 +32,12 @@ nav = [
   ] },
   { "Architecture diagrams" = "architecture/diagrams.md" },
   { "Examples" = "examples/index.md" },
-  { "Agent skills" = "agent-skills/index.md" },
+  { "Agent skills" = [
+    "agent-skills/index.md",
+    { "Using RESOURCERA" = "agent-skills/resourcera.md" },
+    { "Custom providers" = "agent-skills/resourcera-provider.md" },
+    { "Installation and evaluation" = "agent-skills/install.md" },
+  ] },
   { "API reference" = "api/index.md" },
   { "Development" = [
     { "Testing and benchmarks" = "development/testing.md" },
@@ -46,9 +54,14 @@ unresolved_footnotes = true
 
 [project.theme]
 font = false
+logo = "assets/logo.svg"
+favicon = "assets/logo.svg"
+icon.repo = "fontawesome/brands/github"
 features = [
   "content.code.copy",
+  "content.tabs.link",
   "navigation.footer",
+  "navigation.indexes",
   "navigation.sections",
   "navigation.tabs",
   "navigation.top",
@@ -86,8 +99,12 @@ members_order = "source"
 [project.markdown_extensions]
 admonition = {}
 attr_list = {}
+md_in_html = {}
 tables = {}
 toc.permalink = true
 pymdownx.details = {}
+pymdownx.emoji.emoji_index = "zensical.extensions.emoji.twemoji"
+pymdownx.emoji.emoji_generator = "zensical.extensions.emoji.to_svg"
 pymdownx.highlight = {}
 pymdownx.superfences = {}
+pymdownx.tabbed.alternate_style = true

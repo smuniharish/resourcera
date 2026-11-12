@@ -27,7 +27,13 @@ def test_executable_examples(example: Path) -> None:
 
 @pytest.mark.examples
 @pytest.mark.parametrize(
-    "document", [ROOT / "README.md", ROOT / "docs" / "getting-started" / "quickstart.md"]
+    "document",
+    [
+        ROOT / "README.md",
+        ROOT / "docs" / "index.md",
+        ROOT / "docs" / "getting-started" / "quickstart.md",
+        ROOT / "skills" / "resourcera" / "SKILL.md",
+    ],
 )
 def test_documented_quickstart(document: Path) -> None:
     source = document.read_text(encoding="utf-8")

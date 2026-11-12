@@ -14,13 +14,14 @@ uv run pyrefly check
 uv run pytest --cov=resourcera --cov-branch
 uv run zensical build --strict
 uv run python scripts/check_site_links.py
-npm ci --ignore-scripts
 node scripts/render-diagrams.mjs --check
 ```
 
-For diagram regeneration, install the pinned project-local Node dependencies and set
+The diagram check needs Node.js but does not require the renderer to be installed.
+For regeneration, install `@mermaid-js/mermaid-cli@12.2.0` globally with
+`npm install --global --ignore-scripts @mermaid-js/mermaid-cli@12.2.0`, and set
 `PUPPETEER_EXECUTABLE_PATH` to an existing Chromium or Edge executable. Run
-`node scripts/render-diagrams.mjs` and commit the sources, rendered images, and manifest
-together. Never install vendor SDKs or hardware drivers from library code.
+`node scripts/render-diagrams.mjs` and commit the sources, rendered images, and
+manifest together. Never install vendor SDKs or hardware drivers from library code.
 
 Report security issues privately as described in [SECURITY.md](SECURITY.md).

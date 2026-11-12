@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add RESOURCERA branding, a redesigned documentation homepage, and expanded agent skills.
+- Use a pinned global Mermaid renderer for diagram regeneration, without Node project files.
 - Add async resource snapshots, psutil telemetry including process virtual memory,
   Linux runnable-task observations, optional process socket counts, and
   cgroup-aware limits.

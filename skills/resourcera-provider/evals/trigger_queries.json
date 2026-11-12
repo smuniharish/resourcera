@@ -1,0 +1,21 @@
+{
+  "skill_name": "resourcera-provider",
+  "queries": [
+    {"query": "write a custom RESOURCERA accelerator provider", "should_trigger": true, "split": "train"},
+    {"query": "test the timeout of a RESOURCERA provider", "should_trigger": true, "split": "train"},
+    {"query": "return a ProviderReport for our accelerator interface", "should_trigger": true, "split": "train"},
+    {"query": "debug a RESOURCERA custom provider import failure", "should_trigger": true, "split": "train"},
+    {"query": "simulate multiple devices in our RESOURCERA provider tests", "should_trigger": true, "split": "train"},
+    {"query": "report unavailable telemetry in a RESOURCERA provider", "should_trigger": true, "split": "validation"},
+    {"query": "make our custom RESOURCERA accelerator discovery bounded", "should_trigger": true, "split": "validation"},
+    {"query": "test partial telemetry for our ResourceConfig provider", "should_trigger": true, "split": "validation"},
+    {"query": "use RESOURCERA to limit my async worker by memory", "should_trigger": false, "split": "train"},
+    {"query": "why did my RESOURCERA admission get rejected", "should_trigger": false, "split": "train"},
+    {"query": "configure RESOURCERA leases for two local processes", "should_trigger": false, "split": "train"},
+    {"query": "inspect an existing RESOURCERA snapshot", "should_trigger": false, "split": "train"},
+    {"query": "write a dashboard for GPU metrics", "should_trigger": false, "split": "train"},
+    {"query": "why is a RESOURCERA capacity estimate unknown", "should_trigger": false, "split": "validation"},
+    {"query": "install a vendor accelerator driver", "should_trigger": false, "split": "validation"},
+    {"query": "train a model using an existing GPU", "should_trigger": false, "split": "validation"}
+  ]
+}

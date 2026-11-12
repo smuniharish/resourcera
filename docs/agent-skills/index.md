@@ -1,10 +1,34 @@
 # Agent skills
 
-The repository contains development-time agent skills under `skills/`:
+Give your coding agent practical, versioned guidance for working with RESOURCERA.
+These skills are optional development-time instructions, not runtime dependencies.
+Each skill contains a focused workflow, safety rules, and references that can be
+loaded when needed.
 
-- `resourcera`: use snapshots, capacity, admission, and leases safely.
-- `resourcera-provider`: implement and validate a bounded accelerator provider.
+<div class="grid cards" markdown>
 
-These are instructions for compatible coding agents, not runtime dependencies.
-Review the `SKILL.md` files and copy or link them into the agent's own skill
-directory according to that agent's documentation.
+-   :material-robot-outline: **resourcera**
+
+    ---
+
+    Integrate snapshots, capacity estimates, admission, and reservations without
+    mistaking unknown observations for free capacity.
+
+    [Explore the skill :material-arrow-right:](resourcera.md)
+
+-   :material-chip: **resourcera-provider**
+
+    ---
+
+    Build and test isolated custom accelerator providers with explicit capabilities
+    and truthful failure states.
+
+    [Explore the skill :material-arrow-right:](resourcera-provider.md)
+
+</div>
+
+[Install the skills](install.md){ .md-button .md-button--primary }
+
+The skills use the [Agent Skills format](https://agentskills.io/specification).
+Review the instructions before using them, and verify any generated changes with
+the application or provider's own tests.

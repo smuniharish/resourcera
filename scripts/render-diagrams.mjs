@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
-import { promises as fs } from "node:fs";
+import { execSync, spawnSync } from "node:child_process";
+import { existsSync, promises as fs } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -11,14 +11,6 @@ const config = join(sourcesDir, "mermaid-config.json");
 const manifestPath = join(outputDir, "manifest.json");
 const version = "12.2.0";
 const check = process.argv.includes("--check");
-const packageJson = JSON.parse(await fs.readFile(join(root, "package.json"), "utf8"));
-const lock = JSON.parse(await fs.readFile(join(root, "package-lock.json"), "utf8"));
-if (
-  packageJson.devDependencies["@mermaid-js/mermaid-cli"] !== version ||
-  lock.packages["node_modules/@mermaid-js/mermaid-cli"].version !== version
-) {
-  throw new Error(`The package manifest and lock must pin Mermaid CLI ${version}.`);
-}
 const digest = (data) => createHash("sha256").update(data).digest("hex");
 const textHash = async (path) =>
   digest((await fs.readFile(path, "utf8")).replace(/\r\n/g, "\n"));
@@ -45,9 +37,34 @@ for (const name of expectedImages) {
 }
 
 if (!check) {
-  const packagePath = join(root, "node_modules", "@mermaid-js", "mermaid-cli");
+  let globalRoot;
+  const configuredPrefix = process.env.npm_config_prefix || process.env.NPM_CONFIG_PREFIX;
+  if (configuredPrefix) {
+    globalRoot =
+      process.platform === "win32"
+        ? join(configuredPrefix, "node_modules")
+        : join(configuredPrefix, "lib", "node_modules");
+  } else {
+    try {
+      globalRoot = execSync("npm root --global", { encoding: "utf8", stdio: "pipe" }).trim();
+    } catch (error) {
+      throw new Error("Could not locate global npm packages; ensure npm is available.", {
+        cause: error,
+      });
+    }
+    if (globalRoot.includes("***")) {
+      throw new Error("npm redacted its global path; set npm_config_prefix explicitly.");
+    }
+  }
+  const packagePath = join(globalRoot, "@mermaid-js", "mermaid-cli");
+  const installCommand = `npm install --global --ignore-scripts @mermaid-js/mermaid-cli@${version}`;
+  if (!existsSync(join(packagePath, "package.json"))) {
+    throw new Error(`Mermaid CLI ${version} is required. Install it with: ${installCommand}`);
+  }
   const installed = JSON.parse(await fs.readFile(join(packagePath, "package.json"), "utf8")).version;
-  if (installed !== version) throw new Error(`Mermaid CLI ${version} is required.`);
+  if (installed !== version) {
+    throw new Error(`Mermaid CLI ${version} is required; found ${installed}. Run: ${installCommand}`);
+  }
   const cli = join(packagePath, "src", "cli.js");
   for (const name of names) {
     const result = spawnSync(

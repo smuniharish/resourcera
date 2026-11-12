@@ -1,0 +1,38 @@
+{
+  "skill_name": "resourcera-provider",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Add a custom RESOURCERA provider for an installed OS accelerator interface that can list devices but cannot read memory.",
+      "expected_output": "An importable provider returns stable device identities and explicitly unsupported memory telemetry, with no fabricated memory values.",
+      "files": [],
+      "assertions": [
+        "The provider returns a ProviderReport and describes supported capabilities",
+        "Device identities are stable and memory is explicitly unsupported rather than zero",
+        "The provider is exercised through ResourceConfig and ResourceManager"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "One custom accelerator provider sometimes hangs. Prevent it from disabling discovery from the other providers.",
+      "expected_output": "Uses the existing isolated provider timeout and verifies the failure is surfaced while independent providers continue.",
+      "files": [],
+      "assertions": [
+        "The existing child-process timeout is used rather than an unbounded retry",
+        "Provider failure or timeout remains visible",
+        "A test checks that an independent provider still reports"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Test a RESOURCERA provider without a GPU, covering no devices, partial telemetry, and an inaccessible device.",
+      "expected_output": "Deterministic tests simulate the interfaces and assert distinct provider, device, and metric states without requiring hardware.",
+      "files": [],
+      "assertions": [
+        "Tests run without physical accelerator hardware",
+        "No devices, partial telemetry, and inaccessibility are distinguished",
+        "Missing values are not represented as valid zero readings"
+      ]
+    }
+  ]
+}

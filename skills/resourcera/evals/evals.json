@@ -1,0 +1,39 @@
+{
+  "skill_name": "resourcera",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Protect my async worker with RESOURCERA: each job needs 256 MiB, and rejected jobs should be returned to the caller without running.",
+      "expected_output": "A manager remains open for the worker lifetime, each job runs inside a memory admission context, and rejection is handled without starting the job.",
+      "files": [],
+      "assertions": [
+        "The workload specifies 256 MiB as memory demand",
+        "The admission context remains open for the entire job",
+        "AdmissionRejectedError is handled without running rejected work",
+        "The manager is closed during shutdown"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Our CPU capacity estimate is unknown right after startup. Make it safe without pretending we have unlimited capacity.",
+      "expected_output": "Explains rate warm-up and preserves unknown capacity; any waiting or retry is bounded and does not manufacture a usable measurement.",
+      "files": [],
+      "assertions": [
+        "Unknown capacity is not interpreted as zero load or unlimited capacity",
+        "CPU rate warm-up and metric freshness are considered",
+        "Any waiting or retry has a finite bound"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Coordinate two local Python workers with RESOURCERA reservations, and explain what happens if one dies.",
+      "expected_output": "Uses one absolute SQLite database path on a local filesystem, describes lease expiry and renewal, and states that unrelated processes remain uncoordinated.",
+      "files": [],
+      "assertions": [
+        "Both cooperating processes use the same local SQLite coordination database",
+        "Lease expiry and renewal or lease loss are addressed",
+        "The answer does not promise distributed coordination or physical isolation"
+      ]
+    }
+  ]
+}

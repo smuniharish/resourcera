@@ -1,0 +1,21 @@
+{
+  "skill_name": "resourcera",
+  "queries": [
+    {"query": "use RESOURCERA to limit my async worker by memory", "should_trigger": true, "split": "train"},
+    {"query": "why did my RESOURCERA admission get rejected", "should_trigger": true, "split": "train"},
+    {"query": "estimate CPU and memory capacity with ResourceManager", "should_trigger": true, "split": "train"},
+    {"query": "configure RESOURCERA leases for two local processes", "should_trigger": true, "split": "train"},
+    {"query": "my resource snapshot says memory is stale", "should_trigger": true, "split": "train"},
+    {"query": "handle RESOURCERA lease loss while a task is running", "should_trigger": true, "split": "validation"},
+    {"query": "why is a RESOURCERA capacity estimate unknown", "should_trigger": true, "split": "validation"},
+    {"query": "use RESOURCERA to inspect the available accelerator devices", "should_trigger": true, "split": "validation"},
+    {"query": "write a custom RESOURCERA accelerator provider", "should_trigger": false, "split": "train"},
+    {"query": "test the timeout of a RESOURCERA provider", "should_trigger": false, "split": "train"},
+    {"query": "write a new vendor SDK for accelerator discovery", "should_trigger": false, "split": "train"},
+    {"query": "build a generic dashboard for CPU metrics", "should_trigger": false, "split": "train"},
+    {"query": "configure a Kubernetes deployment", "should_trigger": false, "split": "train"},
+    {"query": "implement an OS accelerator discovery plugin", "should_trigger": false, "split": "validation"},
+    {"query": "use AnyIO's capacity limiter without RESOURCERA", "should_trigger": false, "split": "validation"},
+    {"query": "train a machine learning model on a GPU", "should_trigger": false, "split": "validation"}
+  ]
+}
