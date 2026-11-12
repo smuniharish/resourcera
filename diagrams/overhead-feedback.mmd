@@ -1,0 +1,11 @@
+flowchart TD
+    costs["Measure previous work and managed state"] --> ratio["Compare against configured budgets"]
+    ratio --> normal{"Below 80 percent?"}
+    normal -- yes --> regular["Normal sampling"]
+    normal -- no --> critical{"At or above 100 percent?"}
+    critical -- no --> reduced["Reduce optional work and sampling frequency"]
+    critical -- yes --> suspend["Suspend optional probes and new admission"]
+    suspend --> stale["Mark affected data stale"]
+    stale --> recovery["Keep bounded recovery sampling"]
+    recovery --> ratio
+    reduced --> ratio

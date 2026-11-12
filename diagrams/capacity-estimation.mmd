@@ -1,0 +1,9 @@
+flowchart TD
+    snapshot["Cached measurements"] --> fresh{"Required data fresh and usable?"}
+    fresh -- no --> unknown["Unknown capacity; reject admission"]
+    fresh -- yes --> limits["Intersect affinity, quotas, and memory limits"]
+    limits --> demand["Evaluate workload dimensions"]
+    demand --> claims["Subtract logical claims"]
+    claims --> margin["Apply safety margin and pressure"]
+    margin --> devices["Check each accelerator independently"]
+    devices --> result["Explain limiting resource and assumptions"]

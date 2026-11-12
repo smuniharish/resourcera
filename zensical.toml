@@ -1,0 +1,93 @@
+[project]
+site_name = "RESOURCERA"
+site_description = "Resource intelligence and resource-aware concurrency for Python."
+site_url = "https://resourcera.readthedocs.io/en/latest/"
+site_author = "S MUNI HARISH"
+repo_name = "smuniharish/resourcera"
+repo_url = "https://github.com/smuniharish/resourcera"
+edit_uri = "edit/main/docs/"
+copyright = "Copyright RESOURCERA contributors. Apache License 2.0."
+nav = [
+  { "Home" = "index.md" },
+  { "Getting started" = [
+    { "Installation" = "getting-started/installation.md" },
+    { "Quickstart" = "getting-started/quickstart.md" },
+    { "Configuration" = "getting-started/configuration.md" },
+  ] },
+  { "User guide" = [
+    { "Architecture and scopes" = "guide/architecture.md" },
+    { "Metrics and freshness" = "guide/metrics.md" },
+    { "CPU, memory, and containers" = "guide/cpu-memory.md" },
+    { "Disk and network" = "guide/disk-network.md" },
+    { "Accelerators" = "guide/accelerators.md" },
+    { "Hybrid sampling and overhead" = "guide/sampling-overhead.md" },
+    { "Workloads and capacity" = "guide/capacity.md" },
+    { "Admission and concurrency" = "guide/admission.md" },
+    { "Reservations and coordination" = "guide/coordination.md" },
+    { "Custom providers" = "guide/custom-providers.md" },
+    { "Troubleshooting" = "guide/troubleshooting.md" },
+  ] },
+  { "Architecture diagrams" = "architecture/diagrams.md" },
+  { "Examples" = "examples/index.md" },
+  { "Agent skills" = "agent-skills/index.md" },
+  { "API reference" = "api/index.md" },
+  { "Development" = [
+    { "Testing and benchmarks" = "development/testing.md" },
+    { "Package-name verification" = "development/package-name-verification.md" },
+    { "Release checklist" = "development/release.md" },
+  ] },
+]
+
+[project.validation]
+invalid_links = true
+invalid_link_anchors = true
+unresolved_references = true
+unresolved_footnotes = true
+
+[project.theme]
+font = false
+features = [
+  "content.code.copy",
+  "navigation.footer",
+  "navigation.sections",
+  "navigation.tabs",
+  "navigation.top",
+  "search.highlight",
+  "search.suggest",
+]
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+primary = "indigo"
+accent = "indigo"
+toggle.icon = "material/weather-night"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+primary = "indigo"
+accent = "indigo"
+toggle.icon = "material/weather-sunny"
+toggle.name = "Switch to light mode"
+
+[project.plugins.mkdocstrings.handlers.python]
+paths = ["src"]
+
+[project.plugins.mkdocstrings.handlers.python.options]
+docstring_style = "google"
+extensions = [{ griffe_pydantic = { schema = false } }]
+show_source = false
+show_root_heading = true
+show_signature_annotations = true
+members_order = "source"
+
+[project.markdown_extensions]
+admonition = {}
+attr_list = {}
+tables = {}
+toc.permalink = true
+pymdownx.details = {}
+pymdownx.highlight = {}
+pymdownx.superfences = {}

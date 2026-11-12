@@ -1,0 +1,11 @@
+flowchart TD
+    request["Workload requirements"] --> overhead{"Overhead policy permits work?"}
+    overhead -- no --> reject["Reject with explanation"]
+    overhead -- yes --> transaction["Atomic capacity check and lease acquisition"]
+    transaction --> capacity{"Fresh capacity and limiter slot?"}
+    capacity -- yes --> accept["Accept and run within lease context"]
+    capacity -- no --> wait{"Bounded waiting requested?"}
+    wait -- no --> reject
+    wait -- yes --> queue["Priority queue with timeout and cancellation"]
+    queue --> transaction
+    accept --> release["Release on exit"]

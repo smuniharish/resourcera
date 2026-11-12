@@ -1,0 +1,32 @@
+{
+  "renderer": "@mermaid-js/mermaid-cli@12.2.0",
+  "options": {
+    "background": "white",
+    "scale": 2
+  },
+  "config": "8048b3e3abbca7486b364d4af78397d1fd7337ac25de68a945f4c84b5fea04de",
+  "sources": {
+    "accelerator-discovery.mmd": "65d795e588153a5e9bffd1ee6f8dcd4dafefe3915a2f23c50bcba316d144514d",
+    "admission-decisions.mmd": "cf7bf025b7ec65daf4c649712aa31ec630f6da7d331063450291d46092018098",
+    "capacity-estimation.mmd": "a6ffad04d5114a874ee0aea039df20067623934c2b0c73b9a355e219d98619c2",
+    "coordination.mmd": "c5ab07fd46446f1b035a1377f2a2fccd5648624ffb004857613f9b6ba96b608f",
+    "hybrid-sampling.mmd": "d04ee38f015f621cc2243debf0e4789a58cc1825302ab1df4ca486d9f44db4d9",
+    "overall-architecture.mmd": "c931c347308b4e1a094daf13a73a86c47a2c82daad0c966b65478f7129108d82",
+    "overhead-feedback.mmd": "493eadb11232de79e1fa903fdc0e984930512922b208721611164dc6bdce4bee",
+    "provider-failure-recovery.mmd": "9e1f1ed6b8534cb74917d4b6acdbaabb1a2f4e3f743a28fc378104a09f54619f",
+    "reservation-lifecycle.mmd": "dc6d920cf4023f70a373f825d38d29c4a94539377a72e92b4572fe201b25c401",
+    "resource-discovery.mmd": "d5557acbf46d28be00005be1c4c6fd55f78d3b4215a3c7be45a8e8a6531b8ec8"
+  },
+  "images": {
+    "accelerator-discovery.png": "61429680cc1ec78570381498b5a5ab5510c67bcc79fb75c9e0171510c16e70ed",
+    "admission-decisions.png": "d307ea381be4ef6623196f41109357bdf6a16daaed767e49da85151d28085480",
+    "capacity-estimation.png": "3827a99eb494a5cba163e933a6a5c23dfddf3ed6388d0ea9c07acb37d5c1734d",
+    "coordination.png": "2e14f550290f80419d1aa83067a5bb815a7574dc234f3d4f5d95a790c137813b",
+    "hybrid-sampling.png": "f6c4d95257f044847763d13581ce31433695cfa98ef111250512d6f43f2d5dbb",
+    "overall-architecture.png": "d1e8f97eed5c2ff6470492484b95d0c8da8edf8c3c7d1ceac31b8088158c5795",
+    "overhead-feedback.png": "0841ba6b017a9a705a5fb69d358b7eff75dc1269ad637e30f652fdc25efbe96f",
+    "provider-failure-recovery.png": "42e06ec4df796da8981c64596a3fd0ab516c1691e79412c2845380f68f771982",
+    "reservation-lifecycle.png": "d9ffea141b2bb66672a5b5aa6cf5f7c5a631a876240eddd197acd24f502be192",
+    "resource-discovery.png": "9fa116f80211ac3883482ba99f7f717960cca7c95632ab95b20ade203efd1696"
+  }
+}

@@ -1,0 +1,137 @@
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14"]
+build-backend = "uv_build"
+
+[project]
+name = "resourcera"
+version = "0.1.0"
+description = "Resource intelligence and adaptive capacity for Python applications."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+  { name = "S MUNI HARISH", email = "samamuniharish@gmail.com" },
+]
+classifiers = [
+  "Framework :: AsyncIO",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.15",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
+dependencies = [
+  "psutil>=7.2.2,<8",
+  "anyio>=4.16.0,<5",
+  "pydantic>=2.14.3,<3",
+  "refresh-engine>=1.0.0,<2",
+]
+
+[project.optional-dependencies]
+nvidia = ["nvidia-ml-py>=13.615.71,<14"]
+
+[project.urls]
+Homepage = "https://github.com/smuniharish/resourcera"
+Documentation = "https://resourcera.readthedocs.io/"
+Repository = "https://github.com/smuniharish/resourcera"
+Issues = "https://github.com/smuniharish/resourcera/issues"
+Changelog = "https://github.com/smuniharish/resourcera/blob/main/CHANGELOG.md"
+
+[dependency-groups]
+test = [
+  "hypothesis>=6.170.14",
+  "pytest>=9.2.0",
+  "pytest-asyncio>=1.4.1.post1",
+  "pytest-cov>=7.1.0",
+  "pytest-timeout>=2.4.0",
+  "trio>=0.32.0,<1",
+]
+lint = ["pre-commit>=4.5,<5", "ruff>=0.17.3,<0.18"]
+types = ["pyrefly>=1.4.1,<2", "types-psutil>=7,<8"]
+docs = [
+  "griffe-pydantic>=1.3.2,<2",
+  "mkdocstrings-python>=2.0.10,<3",
+  "zensical>=0.1.0,<0.2",
+]
+package = ["twine>=7,<8"]
+dev = [
+  { include-group = "test" },
+  { include-group = "lint" },
+  { include-group = "types" },
+]
+
+[tool.uv]
+default-groups = ["dev"]
+
+[tool.uv.build-backend]
+source-include = [
+  ".github/workflows/**",
+  ".gitignore",
+  ".pre-commit-config.yaml",
+  ".readthedocs.yaml",
+  "CHANGELOG.md",
+  "CODE_OF_CONDUCT.md",
+  "CONTRIBUTING.md",
+  "SECURITY.md",
+  "diagrams/**",
+  "docs/**",
+  "examples/**",
+  "package-lock.json",
+  "package.json",
+  "scripts/**",
+  "skills/**",
+  "tests/**",
+  "uv.lock",
+  "zensical.toml",
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers"
+testpaths = ["tests"]
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = ["error"]
+markers = [
+  "benchmark: performance regression checks",
+  "examples: executable example checks",
+  "platform: checks requiring a particular operating system",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["ASYNC", "B", "C4", "D", "E", "F", "I", "N", "RUF", "S", "SIM", "UP", "W"]
+ignore = ["D105", "D107", "S101"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"examples/**/*.py" = ["D", "T201"]
+"scripts/**/*.py" = ["D", "T201"]
+"tests/**/*.py" = ["D", "S", "RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.pyrefly]
+project-includes = ["src", "tests", "examples", "scripts"]
+search-path = ["src", "."]
+python-version = "3.12"
+
+[tool.coverage.run]
+branch = true
+source = ["resourcera"]
+patch = ["subprocess"]
+
+[tool.coverage.report]
+show_missing = true
+exclude_also = ["if TYPE_CHECKING:", "^\\s*\\.\\.\\.$"]

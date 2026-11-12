@@ -1,0 +1,7 @@
+flowchart LR
+    first["Manager in process A"] --> sqlite["SQLite transaction on local file"]
+    second["Manager in process B"] --> sqlite
+    sqlite --> leases["Shared logical lease records"]
+    local["Default interpreter-local manager"] --> memory["Interpreter-local claims"]
+    external["Nonparticipating applications"] -. not coordinated .-> leases
+    distributed["Distributed coordination"] --> unsupported["Explicitly unsupported"]

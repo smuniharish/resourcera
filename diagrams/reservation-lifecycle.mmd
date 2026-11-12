@@ -1,0 +1,10 @@
+stateDiagram-v2
+    [*] --> Requested
+    Requested --> Active: atomic acquisition
+    Requested --> Rejected: capacity unavailable
+    Active --> Active: renew before expiry
+    Active --> Released: release or context exit
+    Active --> Lost: expiry or failed renewal
+    Lost --> [*]: notify and stop work
+    Released --> [*]
+    Rejected --> [*]

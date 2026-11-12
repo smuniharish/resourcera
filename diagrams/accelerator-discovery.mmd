@@ -1,0 +1,13 @@
+flowchart TD
+    scan["Enumerate OS-visible devices"] --> identity["Identify supported vendor and device type"]
+    identity --> interface{"Management interface installed?"}
+    interface -- no --> missing["Report detected device and missing provider"]
+    interface -- yes --> child["Run bounded isolated provider"]
+    child --> result{"Provider result"}
+    result -- usable --> telemetry["Publish supported per-device metrics"]
+    result -- partial --> partial["Report partial telemetry"]
+    result -- failed --> failed["Report error; preserve independent providers"]
+    missing --> snapshot["Cached accelerator inventory"]
+    telemetry --> snapshot
+    partial --> snapshot
+    failed --> snapshot

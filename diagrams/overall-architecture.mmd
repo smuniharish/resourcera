@@ -1,0 +1,13 @@
+flowchart LR
+    app["Python application"] --> api["ResourceManager"]
+    api --> snapshots["Cached snapshots"]
+    api --> capacity["Capacity and admission"]
+    snapshots --> telemetry["psutil and OS telemetry"]
+    snapshots --> inventory["refresh-engine inventory"]
+    inventory --> providers["Isolated accelerator providers"]
+    capacity --> leases["Logical leases"]
+    leases --> local["Interpreter-local state"]
+    leases --> sqlite["Opt-in local SQLite"]
+    overhead["Overhead feedback"] --> telemetry
+    overhead --> inventory
+    overhead --> capacity

@@ -1,0 +1,13 @@
+flowchart TD
+    start["Start manager"] --> psutil["Read psutil host and process counters"]
+    start --> os["Inspect affinity, cgroups, and pressure"]
+    start --> inventory["Refresh slow hardware inventory"]
+    inventory --> accelerator["Discover visible accelerators"]
+    psutil --> normalize["Normalize values, units, and source"]
+    os --> normalize
+    accelerator --> normalize
+    normalize --> status{"Observation usable?"}
+    status -- yes --> available["Available or estimated"]
+    status -- no --> unknown["Unavailable, unsupported, or error"]
+    available --> cache["Publish immutable cached snapshot"]
+    unknown --> cache

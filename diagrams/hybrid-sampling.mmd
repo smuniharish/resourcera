@@ -1,0 +1,11 @@
+flowchart LR
+    cpu["CPU and memory interval"] --> cache["Cached snapshot"]
+    io["Slower disk and network interval"] --> cache
+    inventory["Slow refresh-engine inventory"] --> cache
+    events["Linux link events when available"] --> inventory
+    demand["On-demand accelerator detail"] --> cache
+    fallback["Periodic fallback"] --> inventory
+    budget["Overhead and pressure feedback"] --> cpu
+    budget --> io
+    budget --> inventory
+    budget --> demand
