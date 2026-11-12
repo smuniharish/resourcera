@@ -2,12 +2,13 @@ import threading
 import time
 
 import anyio
+import psutil
 import pytest
 from refresh_engine import InMemoryStateStore
 
 from resourcera import ManagerStateError, ResourceConfig, ResourceManager, UnsupportedScopeError
 from resourcera.inventory import InventoryReport
-from resourcera.models import DeviceStatus, Scope
+from resourcera.models import DeviceStatus, MetricStatus, Scope
 from resourcera.telemetry import SystemSampler
 
 
@@ -41,6 +42,17 @@ async def test_lifecycle_and_cached_snapshots(inventory_probe: None) -> None:
         await manager.snapshot()
     with pytest.raises(ManagerStateError):
         await manager.start()
+
+
+@pytest.mark.anyio
+async def test_start_without_cpu_frequency(
+    inventory_probe: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delattr(psutil, "cpu_freq", raising=False)
+    async with ResourceManager(ResourceConfig(cpu_budget_fraction=1)) as manager:
+        frequency = (await manager.snapshot()).cpu.frequency_mhz
+        assert frequency.value is None
+        assert frequency.status is MetricStatus.UNSUPPORTED
 
 
 @pytest.mark.anyio

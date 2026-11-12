@@ -5,7 +5,8 @@ physical counts, per-core and aggregate utilization, affinity, frequency, proces
 CPU and threads, and load average where supported. Linux also exposes the number
 of runnable kernel scheduling entities, including processes and threads. CPU
 capacity is measured in estimated **CPU equivalents**, never as a fixed number
-of free threads.
+of free threads. When psutil does not expose CPU frequency, as on macOS, that
+metric is `unsupported` and other sampling continues.
 
 On Linux, cgroup v1/v2 quota and memory hierarchies are read from the current
 process's mount namespace. CPU headroom intersects affinity and idle CPU with

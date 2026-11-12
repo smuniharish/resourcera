@@ -211,6 +211,10 @@ async def test_suspended_policy_stales_process_connection_count(
             cached_sample = await anyio.to_thread.run_sync(runtime._sample_blocking, False)
             runtime._publish(cached_sample)
             assert runtime.snapshot().network_connections.status is MetricStatus.STALE
+            invalidated_at = runtime._connections_invalid_before
+            assert invalidated_at is not None
+            if time.monotonic() <= invalidated_at:
+                await anyio.sleep(2 * time.get_clock_info("monotonic").resolution)
             fresh_sample = await anyio.to_thread.run_sync(runtime._sample_blocking, True)
             runtime._publish(fresh_sample)
             assert runtime.snapshot().network_connections.status is MetricStatus.ESTIMATED

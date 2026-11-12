@@ -238,7 +238,9 @@ class _Guid(ctypes.Structure):
 
 
 def _windows_devices() -> tuple[list[DeviceReading], list[str]]:
-    library = ctypes.WinDLL("cfgmgr32", use_last_error=True)
+    if sys.platform != "win32":
+        raise OSError("Windows accelerator discovery requires Windows")
+    library = ctypes.WinDLL("cfgmgr32", use_last_error=True)  # type: ignore[attr-defined]
     size_fn = library.CM_Get_Device_Interface_List_SizeW
     list_fn = library.CM_Get_Device_Interface_ListW
     size_fn.argtypes = [

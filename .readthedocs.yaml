@@ -8,11 +8,11 @@ build:
     post_create_environment:
       - python -m pip install uv==0.13.6
     install:
-      - uv sync --locked --no-default-groups --group docs
+      - python -m uv sync --locked --no-default-groups --group docs
     build:
       html:
-        - uv run --no-sync zensical build --strict
-        - uv run --no-sync python scripts/check_site_links.py
+        - python -m uv run --no-sync zensical build --strict
+        - python -m uv run --no-sync python scripts/check_site_links.py
     post_build:
       - mkdir -p "$READTHEDOCS_OUTPUT/html"
       - cp -r site/. "$READTHEDOCS_OUTPUT/html/"

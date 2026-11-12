@@ -89,7 +89,7 @@ def _isolate_optional_probes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(psutil, "disk_io_counters", lambda: None)
     monkeypatch.setattr(psutil, "net_io_counters", lambda pernic=False: {})
     monkeypatch.setattr(psutil, "net_if_stats", lambda: {})
-    monkeypatch.setattr(psutil, "cpu_freq", lambda: None)
+    monkeypatch.setattr(psutil, "cpu_freq", lambda: None, raising=False)
     limit = CgroupLimit(LimitState.NOT_APPLICABLE)
     monkeypatch.setattr(
         "resourcera.telemetry.read_cgroup", lambda: CgroupMeasurements(limit, limit)
@@ -126,6 +126,15 @@ def test_sampler_reports_cpu_probe_error(monkeypatch: pytest.MonkeyPatch) -> Non
     assert sampled.cpu.utilization_percent.status is MetricStatus.ERROR
     assert sampled.cpu.utilization_percent.value is None
     assert "CPU probe failed" in (sampled.cpu.utilization_percent.detail or "")
+
+
+def test_sampler_handles_missing_cpu_frequency(monkeypatch: pytest.MonkeyPatch) -> None:
+    _isolate_optional_probes(monkeypatch)
+    monkeypatch.delattr(psutil, "cpu_freq")
+    frequency = SystemSampler(ResourceConfig()).sample().cpu.frequency_mhz
+    assert frequency.value is None
+    assert frequency.status is MetricStatus.UNSUPPORTED
+    assert "not exposed" in (frequency.detail or "")
 
 
 def test_process_virtual_memory_preserves_availability(monkeypatch: pytest.MonkeyPatch) -> None:

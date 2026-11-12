@@ -300,7 +300,12 @@ async def test_renewal_expiry_and_admission_loss_notification(
 
         assert manager._runtime is not None
         store = manager._runtime.coordinator()._store
-        monkeypatch.setattr(store, "renew", lambda *_args: {})
+
+        def lose(owner_id: str, lease_ids: tuple[str, ...]) -> dict[str, ResourceLease]:
+            assert store.release(owner_id, lease_ids) == frozenset(lease_ids)
+            return {}
+
+        monkeypatch.setattr(store, "renew", lose)
         with pytest.raises(ReservationError, match="lease was lost"):
             with anyio.fail_after(2):
                 async with manager.admission({"memory": "1GB"}):

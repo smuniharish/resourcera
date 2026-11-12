@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Handle unsupported CPU frequency on macOS and fix the hosted documentation build.
 - Add RESOURCERA branding, a redesigned documentation homepage, and expanded agent skills.
 - Use a pinned global Mermaid renderer for diagram regeneration, without Node project files.
 - Add async resource snapshots, psutil telemetry including process virtual memory,

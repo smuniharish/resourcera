@@ -279,7 +279,14 @@ class SystemSampler:
             else _Reading(None, MetricStatus.UNSUPPORTED, "CPU affinity is not exposed")
         )
         if do_io or self._frequency is None:
-            frequency = _read(psutil.cpu_freq)
+            cpu_frequency = getattr(psutil, "cpu_freq", None)
+            frequency = (
+                _read(cpu_frequency)
+                if cpu_frequency is not None
+                else _Reading(
+                    None, MetricStatus.UNSUPPORTED, "CPU frequency is not exposed by psutil."
+                )
+            )
             self._frequency = metric(
                 float(frequency.value.current) if frequency.value is not None else None,
                 "MHz",
