@@ -1,3 +1,4 @@
+import math
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -312,7 +313,8 @@ async def test_increases_need_hysteresis_and_the_adjustment_interval(
         async with manager.adaptive_concurrency(
             MEMORY, min_concurrency=1, max_concurrency=5
         ) as controller:
-            now = [time.monotonic()]
+            # Whole-second fake time keeps elapsed intervals exact in floating point.
+            now = [float(math.ceil(time.monotonic()))]
             controller._clock = lambda: now[0]
             assert controller.current_limit == 2
             use(manager, with_memory(snapshot, 10 * GB))
@@ -322,9 +324,9 @@ async def test_increases_need_hysteresis_and_the_adjustment_interval(
             now[0] += 60
             assert (await controller.adjust()).current_limit == 4
             now[0] += 60
-            await controller.adjust()
+            first = await controller.adjust()
             state = await controller.adjust()
-            assert state.current_limit == 5, state.adjustment_reason
+            assert state.current_limit == 5, (first.adjustment_reason, state.adjustment_reason)
             assert state.limiting_resource == "requested_maximum"
             assert [item.new_limit for item in state.history] == [2, 4, 5]
 
@@ -722,7 +724,8 @@ async def test_adjustment_overhead_and_history_are_bounded(snapshot: ResourceSna
     manager = await start_manager(snapshot, settings(concurrency_history_size=4))
     try:
         async with manager.adaptive_concurrency(MEMORY, max_concurrency=3) as controller:
-            now = [time.monotonic()]
+            # Whole-second fake time keeps elapsed intervals exact in floating point.
+            now = [float(math.ceil(time.monotonic()))]
             controller._clock = lambda: now[0]
             started = time.perf_counter()
             for _ in range(20):

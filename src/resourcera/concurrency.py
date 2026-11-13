@@ -369,7 +369,7 @@ class ConcurrencyController:
             )
             return
         self._streak += 1
-        elapsed = now - (self._last_change or now)
+        elapsed = now - (now if self._last_change is None else self._last_change)
         if self._streak < 2 or elapsed < self._interval:
             self._reason = (
                 f"Capacity allows {target}; waiting for a confirmed, rate-limited increase."
