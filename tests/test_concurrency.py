@@ -45,6 +45,8 @@ async def start_manager(snapshot: ResourceSnapshot, config: ResourceConfig) -> R
     manager = ResourceManager(config)
     await manager.start()
     assert manager._runtime is not None
+    # Keep background samples from replacing the injected snapshot on slow runners.
+    manager._runtime._publish = lambda sample: None
     manager._runtime._snapshot = snapshot
     return manager
 
@@ -52,6 +54,16 @@ async def start_manager(snapshot: ResourceSnapshot, config: ResourceConfig) -> R
 def use(manager: ResourceManager, snapshot: ResourceSnapshot) -> None:
     assert manager._runtime is not None
     manager._runtime._snapshot = snapshot
+
+
+def stale_memory(snapshot: ResourceSnapshot) -> ResourceSnapshot:
+    metric = snapshot.memory.cgroup_available_bytes
+    old = metric.model_copy(
+        update={"sampled_monotonic": time.monotonic() - metric.fresh_for_seconds - 3600}
+    )
+    return snapshot.model_copy(
+        update={"memory": snapshot.memory.model_copy(update={"cgroup_available_bytes": old})}
+    )
 
 
 def measured[T](value: T, unit: str):
@@ -197,9 +209,7 @@ async def test_unknown_stale_and_accelerator_capacity_is_never_unlimited(
             assert unknown.limiting_resource == resource
             assert "ceiling" in unknown.reason
 
-        stale = snapshot.memory.cgroup_available_bytes.model_copy(update={"sampled_monotonic": 0})
-        memory = snapshot.memory.model_copy(update={"cgroup_available_bytes": stale})
-        use(manager, snapshot.model_copy(update={"memory": memory}))
+        use(manager, stale_memory(snapshot))
         stale_result = await manager.recommend_concurrency(MEMORY, max_concurrency=10)
         assert not stale_result.capacity_known
         assert stale_result.recommended_limit == 1
@@ -300,7 +310,7 @@ async def test_increases_need_hysteresis_and_the_adjustment_interval(
             now[0] += 60
             await controller.adjust()
             state = await controller.adjust()
-            assert state.current_limit == 5
+            assert state.current_limit == 5, state.adjustment_reason
             assert state.limiting_resource == "requested_maximum"
             assert [item.new_limit for item in state.history] == [2, 4, 5]
 
@@ -325,11 +335,7 @@ async def test_unknown_or_degraded_measurements_hold_the_limit(
     try:
         async with manager.adaptive_concurrency(MEMORY, max_concurrency=10) as controller:
             controller._clock = lambda: time.monotonic() + 3600
-            stale = snapshot.memory.cgroup_available_bytes.model_copy(
-                update={"sampled_monotonic": 0}
-            )
-            memory = snapshot.memory.model_copy(update={"cgroup_available_bytes": stale})
-            use(manager, snapshot.model_copy(update={"memory": memory}))
+            use(manager, stale_memory(snapshot))
             for _ in range(3):
                 state = await controller.adjust()
             assert state.current_limit == 2
@@ -356,9 +362,7 @@ async def test_unknown_or_degraded_measurements_hold_the_limit(
 async def test_first_measurable_capacity_calibrates_the_limit_directly(
     snapshot: ResourceSnapshot,
 ) -> None:
-    stale = snapshot.memory.cgroup_available_bytes.model_copy(update={"sampled_monotonic": 0})
-    memory = snapshot.memory.model_copy(update={"cgroup_available_bytes": stale})
-    manager = await start_manager(snapshot.model_copy(update={"memory": memory}), settings())
+    manager = await start_manager(stale_memory(snapshot), settings())
     try:
         async with manager.adaptive_concurrency(MEMORY, max_concurrency=10) as controller:
             assert controller.current_limit == 1
@@ -369,7 +373,7 @@ async def test_first_measurable_capacity_calibrates_the_limit_directly(
             state = await controller.adjust()
             assert state.current_limit == 5
             assert state.adjustment_reason.startswith("Calibrated")
-            use(manager, snapshot.model_copy(update={"memory": memory}))
+            use(manager, stale_memory(snapshot))
             state = await controller.adjust()
             assert state.current_limit == 5
             assert "Holding" in state.adjustment_reason
