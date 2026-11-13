@@ -2,7 +2,8 @@
 
 The `resourcera` skill helps a coding agent integrate or troubleshoot the public
 API. It covers the manager lifecycle, metric freshness, workload requirements,
-capacity estimates, admission, and logical reservations.
+capacity estimates, admission, logical reservations, and adaptive concurrency
+limits.
 
 [Install this skill](install.md){ .md-button .md-button--primary }
 
@@ -12,7 +13,9 @@ capacity estimates, admission, and logical reservations.
 2. Verify the local Python setup and open a manager for the work's lifetime.
 3. Keep unknown measurements distinct from zero or unlimited capacity.
 4. Hold admission while work runs and explicitly handle rejection or lease loss.
-5. Test cancellation, cleanup, and the behavior under resource pressure.
+5. Replace hardcoded semaphores or executor sizes with recommendations and
+   adaptive controllers.
+6. Test cancellation, cleanup, and the behavior under resource pressure.
 
 For implementing a custom accelerator provider, use
 [resourcera-provider](resourcera-provider.md) instead.

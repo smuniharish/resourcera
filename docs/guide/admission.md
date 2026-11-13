@@ -29,3 +29,6 @@ AnyIO's capacity limiter bounds local work while the atomic resource policy
 decides each admission. The effective allowance adapts to fresh capacity; already
 admitted work is not cancelled merely because capacity decreases. A lost lease
 does cancel its admission context and surfaces `ReservationError`.
+
+To replace hardcoded semaphores, limiters, or thread-pool sizes with
+resource-derived limits, see [Adaptive concurrency](concurrency.md).

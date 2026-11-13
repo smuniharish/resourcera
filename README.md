@@ -40,6 +40,7 @@ accelerator SDK.
 | **Observe** | Inspect CPU, memory, disk, network, container limits, and visible accelerators with explicit freshness and capability states. |
 | **Estimate** | Describe workload requirements and identify the limiting resource without treating missing data as free capacity. |
 | **Admit** | Bound concurrent work with explainable acceptance or rejection and optional finite waiting. |
+| **Adapt** | Replace hardcoded semaphores, limiters, and thread-pool sizes with resource-derived, self-adjusting concurrency limits. |
 | **Coordinate** | Hold logical leases within an interpreter or between cooperating processes on one machine. |
 | **Control overhead** | Use bounded, adaptive sampling with observable self-overhead safeguards. |
 
@@ -86,6 +87,28 @@ anyio.run(main)
 The manager owns its sampling and lease lifecycle. CPU and throughput rates need
 two samples; unavailable, stale, or failed required measurements reject admission.
 Keep the admission context open while the work runs.
+
+### Adaptive concurrency
+
+Instead of `asyncio.Semaphore(100)` or `ThreadPoolExecutor(max_workers=10)`, let
+capacity decide:
+
+```python
+async with resources.adaptive_concurrency(
+    {"cpu": 0.5, "memory": "256MiB"}, max_concurrency=50
+) as controller:
+    async with controller.slot():
+        await do_work()
+
+recommendation = await resources.recommend_concurrency(
+    {"memory": "64MiB", "profile": "io-bound"}, max_concurrency=32
+)
+executor = ThreadPoolExecutor(max_workers=recommendation.recommended_limit)
+```
+
+Each slot holds a real lease. Limits fall immediately when capacity drops and
+rise cautiously, and unknown capacity is never treated as unlimited. See the
+[adaptive concurrency guide](https://resourcera.readthedocs.io/en/latest/guide/concurrency/).
 
 ## How it fits together
 

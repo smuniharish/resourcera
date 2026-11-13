@@ -34,6 +34,9 @@ class ResourceConfig(BaseModel):
     max_concurrency: int = Field(default=64, ge=1)
     max_waiters: int = Field(default=128, ge=1)
     admission_wait_timeout_seconds: float = Field(default=5.0, gt=0)
+    concurrency_adjustment_interval_seconds: float = Field(default=2.0, gt=0)
+    concurrency_increase_step: int = Field(default=1, ge=1)
+    concurrency_history_size: int = Field(default=32, ge=1, le=1024)
     lease_duration_seconds: float = Field(default=30.0, ge=0.3)
     coordination_database: Path | None = None
     accelerator_providers: tuple[str, ...] = Field(default=(), max_length=8)

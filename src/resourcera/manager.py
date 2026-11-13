@@ -9,7 +9,7 @@ import socket
 import sys
 import threading
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from concurrent.futures import Future
 from contextlib import AbstractContextManager, suppress
 from dataclasses import replace
@@ -32,6 +32,12 @@ from resourcera.accelerators import (
     run_provider,
 )
 from resourcera.admission import AdmissionCoordinator
+from resourcera.concurrency import (
+    AdaptiveConcurrency,
+    ConcurrencyController,
+    recommend,
+    validate_bounds,
+)
 from resourcera.config import ResourceConfig
 from resourcera.exceptions import (
     ManagerStateError,
@@ -46,6 +52,7 @@ from resourcera.models import (
     AcceleratorDevice,
     AdmissionDecision,
     CapacityResult,
+    ConcurrencyRecommendation,
     DeviceStatus,
     Metric,
     MetricStatus,
@@ -1077,7 +1084,7 @@ class ResourceManager:
         return await operation(runtime)
 
     async def capacity(
-        self, requirements: WorkloadRequirements | dict[str, object] | None = None
+        self, requirements: WorkloadRequirements | Mapping[str, object] | None = None
     ) -> CapacityResult:
         """Estimate capacity from the cached snapshot without running discovery."""
         request = (
@@ -1089,7 +1096,7 @@ class ResourceManager:
 
     async def reserve(
         self,
-        requirements: WorkloadRequirements | dict[str, object],
+        requirements: WorkloadRequirements | Mapping[str, object],
         *,
         lease_id: str | None = None,
         wait: bool = False,
@@ -1158,7 +1165,7 @@ class ResourceManager:
 
     def admission(
         self,
-        requirements: WorkloadRequirements | dict[str, object],
+        requirements: WorkloadRequirements | Mapping[str, object],
         *,
         wait: bool = False,
         wait_timeout_seconds: float | None = None,
@@ -1166,6 +1173,71 @@ class ResourceManager:
         """Create a cancellation-safe context for resource-aware work."""
         return _AdmissionContext(
             self, requirements, wait=wait, wait_timeout_seconds=wait_timeout_seconds
+        )
+
+    async def recommend_concurrency(
+        self,
+        requirements: WorkloadRequirements | Mapping[str, object],
+        *,
+        min_concurrency: int = 1,
+        max_concurrency: int | None = None,
+    ) -> ConcurrencyRecommendation:
+        """Recommend how many more operations of one workload fit right now.
+
+        The result is derived from the cached snapshot and active reservations. It is bounded
+        by ``min_concurrency`` and ``max_concurrency`` (default: the configured ceiling), and
+        unknown or stale required measurements yield the minimum with zero confidence.
+        """
+        request = (
+            requirements
+            if isinstance(requirements, WorkloadRequirements)
+            else WorkloadRequirements.model_validate(requirements)
+        )
+        maximum = self.config.max_concurrency if max_concurrency is None else max_concurrency
+        validate_bounds(min_concurrency, maximum)
+        snapshot = await self.snapshot()
+        capacity = await self.capacity(request)
+        return recommend(
+            capacity, snapshot, request, active=0, minimum=min_concurrency, maximum=maximum
+        )
+
+    def adaptive_concurrency(
+        self,
+        requirements: WorkloadRequirements | Mapping[str, object],
+        *,
+        min_concurrency: int = 1,
+        max_concurrency: int | None = None,
+        max_waiters: int | None = None,
+        wait_timeout_seconds: float | None = None,
+    ) -> AdaptiveConcurrency:
+        """Create a context that yields an adaptive controller for one workload.
+
+        Each ``controller.slot()`` holds a local permit and a logical lease. The limit adapts
+        within the bounds; lowering it never cancels admitted work. ``max_waiters`` defaults to
+        the configured admission queue bound, and ``wait_timeout_seconds=None`` waits for a
+        permit until the caller is cancelled.
+        """
+        request = (
+            requirements
+            if isinstance(requirements, WorkloadRequirements)
+            else WorkloadRequirements.model_validate(requirements)
+        )
+        maximum = self.config.max_concurrency if max_concurrency is None else max_concurrency
+        validate_bounds(min_concurrency, maximum)
+        waiters = self.config.max_waiters if max_waiters is None else max_waiters
+        if waiters < 1:
+            raise ValueError("max_waiters must be positive")
+        if wait_timeout_seconds is not None and not 0 < wait_timeout_seconds < float("inf"):
+            raise ValueError("wait_timeout_seconds must be finite and positive")
+        return AdaptiveConcurrency(
+            ConcurrencyController(
+                self,
+                request,
+                minimum=min_concurrency,
+                maximum=maximum,
+                max_waiters=waiters,
+                wait_timeout_seconds=wait_timeout_seconds,
+            )
         )
 
     async def refresh_accelerators(self) -> tuple[AcceleratorDevice, ...]:
@@ -1214,7 +1286,7 @@ class _AdmissionContext:
     def __init__(
         self,
         manager: ResourceManager,
-        requirements: WorkloadRequirements | dict[str, object],
+        requirements: WorkloadRequirements | Mapping[str, object],
         *,
         wait: bool,
         wait_timeout_seconds: float | None,

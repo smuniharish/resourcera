@@ -2,12 +2,13 @@
 name: resourcera
 description: >-
   Use this skill when adding or debugging RESOURCERA resource snapshots, capacity
-  estimates, admission, or reservations in a Python application. Do not use it to
+  estimates, admission, reservations, or adaptive concurrency limits in a Python
+  application. Do not use it to
   implement a custom accelerator provider; use resourcera-provider instead.
 license: Apache-2.0
 metadata:
   author: S MUNI HARISH
-  version: "0.1.0"
+  version: "0.2.0"
 ---
 
 # Using RESOURCERA
@@ -33,7 +34,11 @@ framework.
 5. Hold the admission context throughout the work, handle
    `AdmissionRejectedError`, and account for `ReservationError` if a lease is lost.
    Waiting must be explicitly requested and bounded.
-6. Run focused application tests, including rejection, cancellation, and cleanup.
+6. To replace a hardcoded semaphore, limiter, or executor size, use
+   `recommend_concurrency` for a one-off limit or `adaptive_concurrency` with
+   `controller.slot()` / `controller.run_sync(executor, ...)` for adjusting
+   limits. Keep application limits such as connection pools as `max_concurrency`.
+7. Run focused application tests, including rejection, cancellation, and cleanup.
    Re-run the setup check when practical.
 
 ## Minimal example
@@ -74,6 +79,9 @@ anyio.run(main)
   memory is per device, not a pooled value. Never install SDKs or drivers silently.
 - A standalone lease must be released and monitored or renewed; a lost lease must
   stop the protected work. Do not create unbounded retry loops.
+- Concurrency limits stay at the minimum while capacity is unknown; never bypass
+  them with a fixed fallback. Network bandwidth alone does not determine request
+  concurrency. Do not mutate `ThreadPoolExecutor` internals.
 
 ## References
 

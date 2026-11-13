@@ -276,6 +276,7 @@ class WorkloadProfile(StrEnum):
     MEMORY_BOUND = "memory-bound"
     IO_BOUND = "io-bound"
     NETWORK_BOUND = "network-bound"
+    DISK_BOUND = "disk-bound"
     GPU_BOUND = "gpu-bound"
     MIXED = "mixed"
 
@@ -397,3 +398,61 @@ class ResourceLease(FrozenModel):
         ):
             raise ValueError("lease and admission decision are inconsistent")
         return self
+
+
+class ConcurrencyRecommendation(FrozenModel):
+    """A bounded concurrency limit derived from one capacity estimate; not a guarantee."""
+
+    recommended_limit: int = Field(ge=1)
+    min_concurrency: int = Field(ge=1)
+    max_concurrency: int = Field(ge=1)
+    estimated_limit: int | None = Field(ge=0)
+    capacity_known: bool
+    limiting_resource: str | None
+    capacity: CapacityResult
+    snapshot_id: str
+    snapshot_age_seconds: float = Field(ge=0)
+    safety_margin: float = Field(ge=0, lt=1)
+    assumptions: tuple[str, ...]
+    reason: str
+    confidence: float = Field(ge=0, le=1)
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> ConcurrencyRecommendation:
+        """Keep the recommendation inside the developer-defined bounds."""
+        if not self.min_concurrency <= self.recommended_limit <= self.max_concurrency:
+            raise ValueError("recommended_limit must lie within the configured bounds")
+        return self
+
+
+class ConcurrencyAdjustment(FrozenModel):
+    """One change to an adaptive controller's concurrency limit."""
+
+    at: datetime
+    previous_limit: int = Field(ge=1)
+    new_limit: int = Field(ge=1)
+    recommended_limit: int = Field(ge=1)
+    limiting_resource: str | None
+    reason: str
+
+
+class ConcurrencyState(FrozenModel):
+    """A point-in-time view of an adaptive concurrency controller."""
+
+    current_limit: int = Field(ge=1)
+    recommended_limit: int = Field(ge=1)
+    min_concurrency: int = Field(ge=1)
+    max_concurrency: int = Field(ge=1)
+    active_count: int = Field(ge=0)
+    pending_count: int = Field(ge=0)
+    available_permits: int = Field(ge=0)
+    last_evaluated_at: datetime | None
+    last_adjusted_at: datetime | None
+    limiting_resource: str | None
+    adjustment_reason: str
+    capacity: CapacityResult | None
+    confidence: float = Field(ge=0, le=1)
+    snapshot_age_seconds: float | None = Field(ge=0)
+    pressure_percent: dict[str, float | None]
+    closed: bool
+    history: tuple[ConcurrencyAdjustment, ...]

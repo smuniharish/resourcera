@@ -18,6 +18,12 @@ uv run python examples/resource_admission.py
 | `hybrid_sampling.py`, `strict_overhead.py` | Sampling and overhead feedback |
 | `capacity_estimation.py`, `workload_requirements.py` | Estimates and explicit profiles |
 | `resource_admission.py`, `adaptive_concurrency.py` | Admission and bounded work |
+| `threadpool_workers.py` | Sizing a `ThreadPoolExecutor` and bounding its submissions |
+| `adaptive_asyncio.py`, `adaptive_anyio.py` | Replacing fixed semaphores and capacity limiters |
+| `network_concurrency.py` | Network-bound limits and overload feedback |
+| `disk_concurrency.py` | Disk-bound file processing |
+| `multiple_controllers.py` | Independent controllers sharing reservations |
+| `concurrency_state.py` | Controller state and adjustment history |
 | `resource_reservations.py` | Logical lease lifecycle |
 | `container_resources.py` | Cgroup limits when available |
 | `custom_provider.py` | An isolated, hardware-optional custom provider |

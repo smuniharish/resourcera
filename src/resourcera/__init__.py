@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from resourcera.accelerators import DeviceReading, ProviderReport
+    from resourcera.concurrency import ConcurrencyController, ConcurrencySlot
     from resourcera.config import ResourceConfig
     from resourcera.exceptions import (
         AdmissionRejectedError,
@@ -22,6 +23,9 @@ if TYPE_CHECKING:
         AcceleratorDevice,
         AdmissionDecision,
         CapacityResult,
+        ConcurrencyAdjustment,
+        ConcurrencyRecommendation,
+        ConcurrencyState,
         DeviceStatus,
         Metric,
         MetricStatus,
@@ -38,6 +42,11 @@ _EXPORTS = {
     "AdmissionDecision": "models",
     "AdmissionRejectedError": "exceptions",
     "CapacityResult": "models",
+    "ConcurrencyAdjustment": "models",
+    "ConcurrencyController": "concurrency",
+    "ConcurrencyRecommendation": "models",
+    "ConcurrencySlot": "concurrency",
+    "ConcurrencyState": "models",
     "DeviceReading": "accelerators",
     "DeviceStatus": "models",
     "ManagerStateError": "exceptions",
@@ -64,6 +73,11 @@ __all__ = [
     "AdmissionDecision",
     "AdmissionRejectedError",
     "CapacityResult",
+    "ConcurrencyAdjustment",
+    "ConcurrencyController",
+    "ConcurrencyRecommendation",
+    "ConcurrencySlot",
+    "ConcurrencyState",
     "DeviceReading",
     "DeviceStatus",
     "ManagerStateError",
@@ -95,7 +109,7 @@ def __getattr__(name: str) -> object:
         try:
             value = version("resourcera")
         except PackageNotFoundError:
-            value = "0.1.0"
+            value = "0.2.0"
     elif name in _EXPORTS:
         value = getattr(import_module(f"resourcera.{_EXPORTS[name]}"), name)
     else:

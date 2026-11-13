@@ -26,6 +26,7 @@ nav = [
     { "Hybrid sampling and overhead" = "guide/sampling-overhead.md" },
     { "Workloads and capacity" = "guide/capacity.md" },
     { "Admission and concurrency" = "guide/admission.md" },
+    { "Adaptive concurrency" = "guide/concurrency.md" },
     { "Reservations and coordination" = "guide/coordination.md" },
     { "Custom providers" = "guide/custom-providers.md" },
     { "Troubleshooting" = "guide/troubleshooting.md" },

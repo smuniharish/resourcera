@@ -224,6 +224,7 @@ def _throughput(
     margin: float,
     now: float,
     label: str,
+    pressure: float = 1.0,
 ) -> ResourceAvailability:
     if limit is None:
         return ResourceAvailability(
@@ -235,9 +236,10 @@ def _throughput(
     if observed.status_at(now) not in _USABLE or observed.value is None or observed.value < 0:
         return _failure(observed, now, f"{label} throughput is unavailable", unit="bytes/second")
     return _available(
-        max(0.0, limit - observed.value) * (1 - margin) - reserved,
+        max(0.0, limit - observed.value) * pressure * (1 - margin) - reserved,
         "bytes/second",
-        f"Configured {label} ceiling less observed throughput, margin, and logical claims.",
+        f"Configured {label} ceiling less observed throughput, I/O pressure, margin, "
+        "and logical claims.",
         (observed.source, "configuration"),
     )
 
@@ -449,6 +451,12 @@ def estimate_capacity(
         "No capacity estimate guarantees future resource availability.",
     ]
     devices, candidates = _accelerators(snapshot, requirements, claims, margin, now)
+    io_pressure = (
+        _pressure_factor(snapshot.pressure.io_percent, "I/O", now, assumptions)
+        if config.disk_read_capacity_bytes_per_second is not None
+        or config.disk_write_capacity_bytes_per_second is not None
+        else 1.0
+    )
     available = {
         "cpu": _cpu(snapshot, claims, margin, now, assumptions),
         "memory": _memory(snapshot, claims, margin, now, assumptions),
@@ -459,6 +467,7 @@ def estimate_capacity(
             margin,
             now,
             "disk read",
+            io_pressure,
         ),
         "disk_write": _throughput(
             config.disk_write_capacity_bytes_per_second,
@@ -467,6 +476,7 @@ def estimate_capacity(
             margin,
             now,
             "disk write",
+            io_pressure,
         ),
         "network": _network(snapshot, config, claims, margin, now),
         "accelerators": devices,

@@ -25,5 +25,12 @@ work, not an operating-system CPU or memory quota.
 Set `coordination_database` to an **absolute local file path** to enable
 cooperating-process SQLite leases. Disk read/write and combined network capacity
 must be configured explicitly before those throughput requirements can be admitted.
+
+Adaptive concurrency controllers re-evaluate capacity every
+`concurrency_adjustment_interval_seconds` (default 2). Each increase adds
+`concurrency_increase_step` (default 1), and each controller keeps at most
+`concurrency_history_size` adjustments (default 32). See
+[Adaptive concurrency](../guide/concurrency.md).
+
 See the [API reference](../api/index.md) and
 [coordination guide](../guide/coordination.md).

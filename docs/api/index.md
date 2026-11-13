@@ -25,6 +25,18 @@ models, provider contracts, and exceptions.
 
 ::: resourcera.models.ResourceLease
 
+## Adaptive concurrency
+
+::: resourcera.concurrency.ConcurrencyController
+
+::: resourcera.concurrency.ConcurrencySlot
+
+::: resourcera.models.ConcurrencyRecommendation
+
+::: resourcera.models.ConcurrencyState
+
+::: resourcera.models.ConcurrencyAdjustment
+
 ## Provider contracts
 
 ::: resourcera.accelerators.DeviceReading
