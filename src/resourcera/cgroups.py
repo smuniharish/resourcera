@@ -116,6 +116,12 @@ def _ancestors(mount: _Mount) -> list[Path]:
     return result
 
 
+def _is_v2_root(path: Path) -> bool:
+    # The kernel omits limit files and cgroup.type only on the real cgroup v2 root,
+    # which cannot be limited; namespaced container roots still expose them.
+    return (path / "cgroup.controllers").exists() and not (path / "cgroup.type").exists()
+
+
 def _cpu_quota_domains(
     mount: _Mount, version: int
 ) -> tuple[CgroupLimit, tuple[CpuQuotaDomain, ...]]:
@@ -124,6 +130,8 @@ def _cpu_quota_domains(
     try:
         for path in _ancestors(mount):
             if version == 2:
+                if _is_v2_root(path):
+                    continue
                 quota, period = (path / "cpu.max").read_text(encoding="utf-8").split()
             else:
                 quota = (path / "cpu.cfs_quota_us").read_text(encoding="utf-8").strip()
@@ -154,6 +162,8 @@ def _memory_limit(mount: _Mount, version: int) -> tuple[CgroupLimit, int | None,
     usage: int | None = None
     try:
         for index, path in enumerate(_ancestors(mount)):
+            if version == 2 and _is_v2_root(path):
+                continue
             limit_name = "memory.max" if version == 2 else "memory.limit_in_bytes"
             usage_name = "memory.current" if version == 2 else "memory.usage_in_bytes"
             raw_limit = (path / limit_name).read_text(encoding="utf-8").strip()

@@ -18,6 +18,9 @@
 - Scale configured disk-throughput capacity by reported I/O pressure.
 - Add adaptive-concurrency documentation and examples for thread pools, asyncio, AnyIO,
   network-bound work, disk-bound work, multiple controllers, and controller state.
+- Treat the real cgroup v2 root, which has no `cpu.max` or `memory.max`, as unlimited
+  rather than unknown, so hosts that run processes in or under it report CPU and memory
+  capacity.
 
 ## 0.1.0 (unpublished)
 

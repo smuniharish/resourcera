@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from resourcera.cgroups import (
+    CgroupLimit,
     _cpu_limit,
     _cpu_quota_domains,
     _cpu_stats,
@@ -39,6 +40,26 @@ def test_unknown_limit_is_not_treated_as_unlimited(tmp_path: Path) -> None:
     (tmp_path / "memory.current").write_text("42", encoding="utf-8")
     assert _cpu_limit(mount, 2).state is LimitState.UNLIMITED
     assert _memory_limit(mount, 2)[0].state is LimitState.UNLIMITED
+
+
+def test_real_v2_root_without_limit_files_is_unlimited(tmp_path: Path) -> None:
+    (tmp_path / "cgroup.controllers").write_text("cpu memory", encoding="utf-8")
+    assert _cpu_limit(_Mount(tmp_path, tmp_path), 2).state is LimitState.UNLIMITED
+    assert _memory_limit(_Mount(tmp_path, tmp_path), 2) == (
+        CgroupLimit(LimitState.UNLIMITED),
+        None,
+        None,
+    )
+
+    child = tmp_path / "runner"
+    child.mkdir()
+    (child / "cgroup.type").write_text("domain", encoding="utf-8")
+    (child / "cpu.max").write_text("200000 100000", encoding="utf-8")
+    (child / "memory.max").write_text("1000", encoding="utf-8")
+    (child / "memory.current").write_text("400", encoding="utf-8")
+    mount = _Mount(tmp_path, child)
+    assert _cpu_limit(mount, 2) == CgroupLimit(LimitState.FINITE, 2.0)
+    assert _memory_limit(mount, 2) == (CgroupLimit(LimitState.FINITE, 1000), 600, 400)
 
 
 def test_v1_unlimited_sentinel_and_finite_quota(tmp_path: Path) -> None:

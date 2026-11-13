@@ -41,18 +41,32 @@ def settings(**values: object) -> ResourceConfig:
     )
 
 
+_INJECTED: dict[int, ResourceSnapshot] = {}
+
+
+@pytest.fixture
+def snapshot(snapshot: ResourceSnapshot) -> ResourceSnapshot:
+    overhead = snapshot.overhead.model_copy(update={"state": "normal", "degraded": False})
+    return snapshot.model_copy(update={"overhead": overhead})
+
+
 async def start_manager(snapshot: ResourceSnapshot, config: ResourceConfig) -> ResourceManager:
     manager = ResourceManager(config)
     await manager.start()
-    assert manager._runtime is not None
-    # Keep background samples from replacing the injected snapshot on slow runners.
-    manager._runtime._publish = lambda sample: None
-    manager._runtime._snapshot = snapshot
+    runtime = manager._runtime
+    assert runtime is not None
+    # Background sampling and live overhead accounting on slow CI runners must not
+    # replace the injected measurements or mark them degraded mid-test.
+    key = id(runtime)
+    runtime._publish = lambda sample: None
+    runtime.snapshot = lambda: _INJECTED[key]
+    use(manager, snapshot)
     return manager
 
 
 def use(manager: ResourceManager, snapshot: ResourceSnapshot) -> None:
     assert manager._runtime is not None
+    _INJECTED[id(manager._runtime)] = snapshot
     manager._runtime._snapshot = snapshot
 
 
