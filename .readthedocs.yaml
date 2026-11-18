@@ -6,7 +6,7 @@ build:
     python: "3.14"
   jobs:
     post_create_environment:
-      - python -m pip install uv==0.13.6
+      - python -m pip install uv==0.13.9
     install:
       - python -m uv sync --locked --no-default-groups --group docs
     build:

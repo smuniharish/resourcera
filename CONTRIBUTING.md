@@ -4,6 +4,12 @@ Keep RESOURCERA a standalone resource-intelligence library. Add tests and docume
 for user-visible behavior, report unavailable measurements honestly, and do not commit
 credentials or local environments.
 
+Documentation and diagrams should explain public capabilities, interfaces, operational
+limits, and failure behavior without publishing unnecessary implementation blueprints.
+Keep integration and troubleshooting guidance useful. Ask maintainers privately about
+potentially sensitive design details; editing documentation does not make public source
+code, previous releases, or Git history confidential.
+
 Use Python 3.12 or later and uv:
 
 ```shell

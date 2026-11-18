@@ -1,10 +1,6 @@
 flowchart TD
-    refresh["Provider refresh"] --> execute["Bounded child process"]
-    execute --> outcome{"Outcome"}
-    outcome -- success --> publish["Publish supported metrics"]
-    outcome -- partial --> preserve["Preserve prior inventory and mark limitations"]
-    outcome -- timeout or error --> terminate["Terminate child and report provider error"]
-    terminate --> independent["Other providers continue"]
-    preserve --> retry["Later scheduled or on-demand refresh"]
-    independent --> retry
-    retry --> refresh
+    refresh["Provider refresh"] --> result["Provider result"]
+    result --> metrics["Supported or partial metrics"]
+    result --> error["Timeout or provider error"]
+    error --> independent["Independent providers remain available"]
+    error --> retry["Later refresh"]

@@ -50,15 +50,15 @@ isolation mechanism. Measurements and estimates are observations, not guarantees
 ## Installation
 
 Python 3.12, 3.13, 3.14, and 3.15 are supported (3.12 or newer is required).
-Install from a checkout:
+Install from PyPI:
 
 ```shell
-python -m pip install .
+python -m pip install resourcera
 ```
 
-The intended distribution name is `resourcera` once a release is published. For
-optional NVIDIA NVML telemetry, install `.[nvidia]` from a checkout and provide a
-compatible driver and NVML library. RESOURCERA never installs SDKs or drivers.
+For optional NVIDIA NVML telemetry, install `resourcera[nvidia]` and provide a
+compatible driver and NVML library. To install from a checkout, use
+`python -m pip install .`. RESOURCERA never installs SDKs or drivers.
 
 ## Quickstart
 

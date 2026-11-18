@@ -10,3 +10,6 @@ repository existed and contained an Apache 2.0 license.
 
 These observations do not reserve a PyPI project name. No package has been
 published as part of this verification.
+
+On November 18, 2026, the PyPI project page listed published versions 0.1.0
+and 0.2.0. See [the PyPI release history](https://pypi.org/project/resourcera/#history).

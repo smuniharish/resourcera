@@ -1,19 +1,19 @@
 # Installation
 
 Python 3.12, 3.13, 3.14, and 3.15 are supported (3.12 or newer is required).
-From a checkout:
-
-```shell
-python -m pip install .
-```
-
-After a release is published, the intended distribution name is `resourcera`:
+Install from PyPI:
 
 ```shell
 python -m pip install resourcera
 ```
 
-For NVIDIA NVML telemetry, explicitly install `resourcera[nvidia]` after release,
+To install from a checkout instead:
+
+```shell
+python -m pip install .
+```
+
+For NVIDIA NVML telemetry, explicitly install `resourcera[nvidia]`,
 or install `.[nvidia]` from a checkout. An appropriate NVIDIA driver and accessible
 NVML native library must already be present. Core import never imports the NVIDIA
 SDK; no SDK, driver, or package is installed automatically.

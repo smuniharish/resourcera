@@ -1,15 +1,22 @@
 # Changelog
 
-## Unreleased (0.2.0)
+## Unreleased (0.2.1)
+
+- Simplify selected architecture diagrams and explain the adaptive concurrency
+  policy at a higher level while retaining user-facing guarantees.
+- Document verified dependency-provided agent skills and correct PyPI installation
+  and release information.
+- Refresh the dependency lockfile and development tooling, and clarify the
+  maintainer-controlled release process.
+
+## 0.2.0
 
 - Add `ResourceManager.recommend_concurrency`, which turns capacity estimates into
   bounded, explainable concurrency and worker-count recommendations with confidence,
   freshness, and assumptions.
 - Add `ResourceManager.adaptive_concurrency` and `ConcurrencyController`: leased slots
-  on an AnyIO capacity limiter with a deterministic AIMD policy (immediate decreases,
-  smoothed and rate-limited increases, calibration once capacity becomes measurable,
-  and application overload feedback), bounded FIFO waiters, and cancellation-safe
-  shutdown.
+  with responsive decreases, cautious increases, application overload feedback,
+  bounded FIFO waiters, and cancellation-safe shutdown.
 - Add `ConcurrencyController.run_sync` for bounded submissions to an application-owned
   executor. A permit is released only after the submitted callable finishes.
 - Add the `ConcurrencyRecommendation`, `ConcurrencyState`, and `ConcurrencyAdjustment`
@@ -22,7 +29,7 @@
   rather than unknown, so hosts that run processes in or under it report CPU and memory
   capacity.
 
-## 0.1.0 (unpublished)
+## 0.1.0
 
 - Handle unsupported CPU frequency on macOS and fix the hosted documentation build.
 - Add RESOURCERA branding, a redesigned documentation homepage, and expanded agent skills.

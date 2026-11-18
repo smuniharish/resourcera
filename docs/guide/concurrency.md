@@ -46,8 +46,7 @@ The result reports:
 - a reason;
 - `confidence` between 0 and 1.
 
-Confidence is the weakest measurement quality across the required dimensions. It
-is halved when the overhead policy has reduced monitoring detail.
+Confidence reflects measurement quality and reduced monitoring detail.
 
 A recommendation is advice, not a guarantee. Another workload, or another
 process that shares the coordination database, can claim the capacity before you
@@ -85,16 +84,15 @@ async with manager.adaptive_concurrency(
         await execute_workload()
 ```
 
-Each `slot()` first takes a permit from an AnyIO `CapacityLimiter`, which
-controls the controller's local limit. It then acquires a real logical lease
-through `manager.admission(..., wait=True)`. Because every slot holds a lease:
+Each `slot()` is bounded by the controller's local limit and holds a logical
+lease. Because every slot holds a lease:
 
 - controllers for different workloads share one reservation ledger;
 - no controller bypasses or double-counts the others;
 - the global `ResourceConfig.max_concurrency` and cross-process coordination
   still apply.
 
-On exit, the slot releases the lease and then the permit. Slots are single-use.
+On exit, the slot releases its capacity and lease. Slots are single-use.
 
 A background task re-evaluates capacity every
 `concurrency_adjustment_interval_seconds`. It uses the cached snapshot and the
@@ -103,7 +101,7 @@ You can also call `await controller.adjust()` yourself.
 
 ### Adjustment policy
 
-The policy is deterministic and explainable:
+The controller adjusts within the configured bounds:
 
 - **Initial limit.** The first evaluation sets the limit directly. If capacity is
   not yet measurable, the limit stays at the minimum. The first measurable
@@ -112,22 +110,17 @@ The policy is deterministic and explainable:
 - **Decreases.** These are immediate. When the target falls below the active
   count, admitted work keeps running, and new slots wait until active work drains
   below the limit. RESOURCERA never cancels work merely because a limit falls.
-- **Increases.** An increase needs a smoothed (EWMA) target above the current
-  limit for two consecutive evaluations, at least one adjustment interval since
-  the last change, fresh measurements, and monitoring that is not degraded. Each
-  increase adds `concurrency_increase_step`.
+- **Increases.** Increases are cautious and require fresh measurements and
+  monitoring that is not degraded. Each increase adds `concurrency_increase_step`.
 - **Unknown or stale capacity.** The limit is held; it is never treated as
   unlimited. Admission rejects work that needs an unmeasurable dimension, so slots
   fail with `AdmissionRejectedError` until the measurement is usable.
 - **Overload feedback.** `controller.signal_overload(reason)` halves the limit
-  immediately, for example after timeouts or HTTP 429 responses. This is the
-  multiplicative-decrease half of the AIMD policy.
+  immediately, for example after timeouts or HTTP 429 responses.
 
-Because capacity counts the controller's own leases, the target is the active
-count plus the additional operations that still fit. Availability is floored at
-zero, so if capacity collapses while work runs, the limit first drops to the
-active count and then converges as work finishes. Use `signal_overload` if you
-need to fall below the active count sooner.
+If capacity collapses while work runs, the limit can remain at the active count
+and decrease as work finishes. Use `signal_overload` if you need to reduce the
+limit below the active count sooner.
 
 ### Backpressure, cancellation, and shutdown
 

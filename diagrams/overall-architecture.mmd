@@ -2,9 +2,11 @@ flowchart LR
     app["Python application"] --> api["ResourceManager"]
     api --> snapshots["Cached snapshots"]
     api --> capacity["Capacity and admission"]
-    snapshots --> telemetry["psutil and OS telemetry"]
-    snapshots --> inventory["refresh-engine inventory"]
-    inventory --> providers["Isolated accelerator providers"]
+    snapshots --> capacity
+    telemetry["psutil and OS telemetry"] --> snapshots
+    inventory["refresh-engine inventory"] --> accelerators["Accelerator discovery"]
+    providers["Isolated accelerator providers"] --> accelerators
+    accelerators --> snapshots
     capacity --> leases["Logical leases"]
     leases --> local["Interpreter-local state"]
     leases --> sqlite["Opt-in local SQLite"]

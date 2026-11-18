@@ -109,7 +109,7 @@ def __getattr__(name: str) -> object:
         try:
             value = version("resourcera")
         except PackageNotFoundError:
-            value = "0.2.0"
+            value = "0.2.1"
     elif name in _EXPORTS:
         value = getattr(import_module(f"resourcera.{_EXPORTS[name]}"), name)
     else:

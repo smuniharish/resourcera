@@ -7,7 +7,7 @@ open a resource manager, and keep it alive for the lifetime of your work.
 
 -   :material-download: **1. Install**
 
-    Install from a checkout and learn about optional accelerator dependencies.
+    Install the package and learn about optional accelerator dependencies.
 
     [Installation :material-arrow-right:](installation.md)
 

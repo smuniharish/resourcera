@@ -1,10 +1,8 @@
-stateDiagram-v2
-    [*] --> Requested
-    Requested --> Active: atomic acquisition
-    Requested --> Rejected: capacity unavailable
-    Active --> Active: renew before expiry
-    Active --> Released: release or context exit
-    Active --> Lost: expiry or failed renewal
-    Lost --> [*]: notify and stop work
-    Released --> [*]
-    Rejected --> [*]
+flowchart TD
+    requested["Reservation requested"] --> active["Active lease"]
+    requested --> rejected["Rejected when capacity is unavailable"]
+    active --> renewed["Renew before expiry"]
+    renewed --> active
+    active --> released["Released or context exited"]
+    active --> lost["Lost after expiry or failed renewal"]
+    lost --> stop["Notify and stop protected work"]

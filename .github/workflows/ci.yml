@@ -24,7 +24,7 @@ jobs:
           python-version: ${{ matrix.python }}
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
-          version: "0.13.6"
+          version: "0.13.9"
       - run: uv sync --locked --no-default-groups --group test
       - run: uv run --locked --no-default-groups --group test pytest -m "not examples and not benchmark"
 
@@ -37,7 +37,7 @@ jobs:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
-          version: "0.13.6"
+          version: "0.13.9"
       - run: uv sync --locked --all-groups
       - run: uv lock --check
       - run: uv run --locked ruff check .
@@ -54,7 +54,7 @@ jobs:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
-          version: "0.13.6"
+          version: "0.13.9"
       - run: uv sync --locked --no-default-groups
       - run: uv run --locked --no-default-groups python -c "import importlib.util, sys, resourcera; assert importlib.util.find_spec('pynvml') is None; assert 'pynvml' not in sys.modules; print(resourcera.__version__)"
       - run: uv pip check
@@ -68,7 +68,7 @@ jobs:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
-          version: "0.13.6"
+          version: "0.13.9"
       - run: uv sync --locked --no-default-groups --group test --extra nvidia
       - run: uv run --locked --no-default-groups --group test --extra nvidia python -c "import importlib.util; assert importlib.util.find_spec('pynvml') is not None"
       - run: uv run --locked --no-default-groups --group test --extra nvidia pytest tests/test_accelerators.py tests/test_models.py
@@ -83,7 +83,7 @@ jobs:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
-          version: "0.13.6"
+          version: "0.13.9"
       - run: uv sync --no-default-groups --group test --resolution lowest-direct
       - run: uv run --no-default-groups --group test --resolution lowest-direct pytest -m "not examples and not benchmark"
       - run: uv pip check
@@ -97,7 +97,7 @@ jobs:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
-          version: "0.13.6"
+          version: "0.13.9"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
@@ -125,7 +125,7 @@ jobs:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
-          version: "0.13.6"
+          version: "0.13.9"
       - run: uv build
       - run: uv run --locked --group package twine check dist/*.whl dist/*.tar.gz
       - run: uv run --locked python scripts/check_distributions.py dist/*.whl dist/*.tar.gz

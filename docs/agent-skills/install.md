@@ -22,9 +22,8 @@ The evaluation prompts are optional for ordinary use.
 
 ## Skills CLI
 
-The repository includes a `skills.sh.json` discovery manifest. **After these
-changes are available on GitHub**, the [skills CLI](https://github.com/vercel-labs/skills)
-can install either skill:
+The repository includes a `skills.sh.json` discovery manifest. The
+[skills CLI](https://github.com/vercel-labs/skills) can install either skill:
 
 ```shell
 npx skills add smuniharish/resourcera --skill resourcera
@@ -33,6 +32,45 @@ npx skills add smuniharish/resourcera --skill resourcera-provider
 
 For an unpublished local checkout, copy the directories manually instead.
 Review the CLI's agent and scope options before installing.
+
+## Skills for dependencies
+
+These are optional instructions for coding agents; installing a skill does not
+install its Python package. Check each upstream skill's supported package version
+and your agent's skill directory before use.
+
+For applications using refresh-engine directly, its maintainers publish the
+`refresh-engine` skill for application integration and `refresh-engine-extend`
+for custom integrations and stores. They target refresh-engine 1.0.0 and
+Python 3.12 or newer; OpenTelemetry support is optional:
+
+```shell
+npx skills add https://github.com/smuniharish/refresh-engine/tree/master/refresh-engine-skills/skills/refresh-engine
+npx skills add https://github.com/smuniharish/refresh-engine/tree/master/refresh-engine-skills/skills/refresh-engine-extend
+```
+
+See the [upstream installation instructions](https://github.com/smuniharish/refresh-engine/tree/master/refresh-engine-skills).
+
+Pydantic maintains a skill for Pydantic validation and models:
+
+```shell
+npx skills add pydantic/skills --skill pydantic
+```
+
+See [Pydantic's installation guidance](https://pydantic.dev/articles/pydantic-ai-logfire-claude-code-skills)
+for supported agents and alternative installation options. These skills are not
+required to use RESOURCERA.
+
+For broader NVIDIA integration work, NVIDIA also publishes a skill catalog and
+an optional `nvidia-skill-finder`:
+
+```shell
+npx skills add nvidia/skills --skill nvidia-skill-finder --yes
+```
+
+See the [NVIDIA skill catalog](https://github.com/NVIDIA/skills) for its
+prerequisites, including skills CLI 1.5.16 or newer. This finder is not an
+NVML-specific skill and is not required by the optional `nvidia` extra.
 
 ## Verify the setup
 
