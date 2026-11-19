@@ -2,6 +2,7 @@
 
 ## Unreleased (0.2.1)
 
+- Add live PyPI download badges to the README and documentation homepage.
 - Simplify selected architecture diagrams and explain the adaptive concurrency
   policy at a higher level while retaining user-facing guarantees.
 - Document verified dependency-provided agent skills and correct PyPI installation
