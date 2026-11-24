@@ -27,7 +27,11 @@ Positive finite values specify a deadline; zero and negative values are invalid.
 The admission queue remains bounded by `ResourceConfig.max_waiters`, including
 for indefinite waits. Within one manager, larger priority values go first and
 equal priorities are FIFO; a stream of higher-priority requests can starve
-lower-priority work. There is no cross-process priority or fairness guarantee.
+lower-priority work. Only the request at the head of the queue is evaluated, so a
+large queued request also holds back smaller requests behind it until it fits,
+times out or is cancelled; non-waiting requests are rejected while any request
+is queued. Cancelled and timed-out waiters leave the queue immediately. There is
+no priority aging and no cross-process priority or fairness guarantee.
 
 Explicit `None` previously selected the configured timeout; it now means
 indefinite waiting. Omit the argument to retain the former behavior.
@@ -65,6 +69,27 @@ AnyIO's capacity limiter bounds local work while the atomic resource policy
 decides each admission. The effective allowance adapts to fresh capacity; already
 admitted work is not cancelled merely because capacity decreases. A lost lease
 does cancel its admission context and surfaces `ReservationError`.
+
+## Shutdown
+
+`await manager.close()` is idempotent and safe to call concurrently; later calls
+wait for the first to finish. Once closing begins, new admission and reservation
+calls raise `ManagerStateError`, queued waiters are woken with
+`ManagerStateError`, and a lease whose transaction completes during shutdown is
+released instead of being returned. Active admission contexts are cancelled and
+their leases released; the manager's background tasks are stopped before
+`close()` returns.
+
+## Blocking work in threads
+
+Running blocking work inside an admission context keeps the lease for the whole
+call. `anyio.to_thread.run_sync` waits for the thread by default, so a
+cancellation is delivered only after the function returns and the lease is not
+released while the thread still uses resources. Python cannot forcibly stop a
+running thread or native call; long blocking functions should check their own
+stop condition. Avoid `abandon_on_cancel=True` inside an admission context: it
+would release the lease while the abandoned thread keeps running.
+`ConcurrencyController.run_sync` follows the same rule for executors.
 
 To replace hardcoded semaphores, limiters, or thread-pool sizes with
 resource-derived limits, see [Adaptive concurrency](concurrency.md).

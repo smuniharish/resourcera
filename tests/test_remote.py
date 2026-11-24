@@ -1,22 +1,37 @@
 import math
+import threading
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
 
 import anyio
+import anyio.from_thread
+import anyio.lowlevel
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from resourcera import (
+    AdmissionRejectedError,
     ManagerStateError,
     RemoteConcurrencyController,
     RemoteConcurrencyRejectedError,
+    ResourceConfig,
     ResourceManager,
 )
+from resourcera.models import ResourceSnapshot
 from resourcera.remote import _retry_after_seconds
 
 
 @pytest.fixture(params=["asyncio", "trio"])
 def anyio_backend(request: pytest.FixtureRequest) -> str:
     return request.param
+
+
+def fake_clock(controller: RemoteConcurrencyController) -> list[float]:
+    now = [0.0]
+    controller._clock = lambda: now[0]
+    controller._window_started = 0.0
+    return now
 
 
 @pytest.mark.anyio
@@ -305,3 +320,327 @@ async def test_simulated_gateway_capacity_drop_and_recovery() -> None:
         assert max(limits[35:]) >= 6
         assert overloads < naive_overloads
         assert controller.state.overload_count == overloads
+
+
+@pytest.mark.anyio
+async def test_feedback_is_bound_to_the_owning_event_loop_thread() -> None:
+    async with RemoteConcurrencyController("endpoint", minimum_samples=2) as controller:
+
+        def direct() -> None:
+            controller.report_success(latency_seconds=0.1)
+
+        with pytest.raises(RuntimeError, match="from_thread"):
+            await anyio.to_thread.run_sync(direct)
+        for call in (
+            lambda: controller.report_overload(status_code=429),
+            lambda: controller.report_failure(kind="authentication"),
+            lambda: controller.report_capacity(1),
+        ):
+            with pytest.raises(RuntimeError):
+                await anyio.to_thread.run_sync(call)
+        state = controller.state
+        assert (state.success_count, state.overload_count, state.failure_count) == (0, 0, 0)
+
+        def marshalled() -> None:
+            anyio.from_thread.run_sync(lambda: controller.report_success(latency_seconds=0.1))
+            anyio.from_thread.run_sync(lambda: controller.report_overload(status_code=503))
+
+        await anyio.to_thread.run_sync(marshalled)
+        assert (controller.state.success_count, controller.state.overload_count) == (1, 1)
+
+
+@pytest.mark.anyio
+async def test_controller_created_off_loop_binds_on_first_loop_use() -> None:
+    controller = await anyio.to_thread.run_sync(lambda: RemoteConcurrencyController("lazy"))
+    async with controller:
+        async with controller.slot():
+            assert controller.state.in_flight == 1
+        with pytest.raises(RuntimeError):
+            await anyio.to_thread.run_sync(lambda: controller.report_capacity(1))
+        controller.report_capacity(1)
+        assert controller.state.authoritative_capacity == 1
+
+
+@pytest.mark.anyio
+async def test_concurrent_feedback_from_many_tasks_is_consistent() -> None:
+    async with RemoteConcurrencyController(
+        "endpoint", initial_concurrency=4, max_concurrency=8, max_waiters=200
+    ) as controller:
+
+        async def call(index: int) -> None:
+            async with controller.slot():
+                await anyio.lowlevel.checkpoint()
+                if index % 10 == 0:
+                    controller.report_overload(status_code=429)
+                elif index % 10 == 1:
+                    controller.report_failure(kind="application_error")
+                else:
+                    controller.report_success(latency_seconds=0.01)
+
+        async with anyio.create_task_group() as tasks:
+            for index in range(200):
+                tasks.start_soon(call, index)
+        state = controller.state
+        assert (state.success_count, state.overload_count, state.failure_count) == (160, 20, 20)
+        assert 1 <= state.current_limit <= 8
+        assert (state.in_flight, state.pending_count) == (0, 0)
+
+
+@pytest.mark.anyio
+async def test_feedback_racing_shutdown_is_rejected_without_corrupting_state() -> None:
+    manager = ResourceManager()
+    controller = manager.remote_concurrency("endpoint", initial_concurrency=2)
+    async with controller:
+        async with controller.slot():
+            controller.report_success(latency_seconds=0.1)
+            await manager.close()
+            for call in (
+                lambda: controller.report_success(latency_seconds=0.1),
+                lambda: controller.report_overload(status_code=429),
+                lambda: controller.report_failure(kind="authentication"),
+                lambda: controller.report_capacity(1),
+            ):
+                with pytest.raises(ManagerStateError):
+                    call()
+            assert controller.state.in_flight == 1
+        state = controller.state
+        assert (state.in_flight, state.success_count, state.overload_count) == (0, 1, 0)
+        assert (state.current_limit, state.closed) == (2, True)
+        with pytest.raises(ManagerStateError):
+            async with controller.slot():
+                pytest.fail("a closed controller admitted work")
+    with pytest.raises(ManagerStateError):
+        manager.remote_concurrency("late")
+
+
+@pytest.mark.anyio
+async def test_low_volume_feedback_needs_minimum_samples_not_a_full_window() -> None:
+    async with RemoteConcurrencyController(
+        "quiet", initial_concurrency=1, max_concurrency=4, minimum_samples=4
+    ) as controller:
+        now = fake_clock(controller)
+        for _ in range(3):
+            now[0] += 600
+            controller.report_success(latency_seconds=0.1)
+        assert controller.state.current_limit == 1
+        assert controller.state.history == ()
+        now[0] += 600
+        controller.report_success(latency_seconds=0.1)
+        assert controller.state.current_limit == 2
+
+    async with RemoteConcurrencyController("idle", initial_concurrency=3) as idle:
+        now = fake_clock(idle)
+        now[0] = 86_400
+        state = idle.state
+        assert (state.current_limit, state.history) == (3, ())
+        assert "awaiting remote feedback" in state.adjustment_reason
+
+
+@pytest.mark.anyio
+async def test_high_volume_bursts_increase_at_most_once_per_window() -> None:
+    async with RemoteConcurrencyController(
+        "busy", initial_concurrency=2, max_concurrency=32, observation_window_seconds=1
+    ) as controller:
+        now = fake_clock(controller)
+        for window in range(1, 4):
+            now[0] = window - 0.5
+            for _ in range(1000):
+                controller.report_success(latency_seconds=0.01)
+            assert controller.state.current_limit == 1 + window
+            now[0] = window
+            controller.report_success(latency_seconds=0.01)
+            assert controller.state.current_limit == 2 + window
+        assert len(controller.state.history) == 3
+
+
+@pytest.mark.anyio
+async def test_non_overload_failures_never_decrease_and_congestion_recovers() -> None:
+    async with RemoteConcurrencyController(
+        "endpoint", initial_concurrency=4, max_concurrency=8, cooldown_seconds=1
+    ) as controller:
+        now = fake_clock(controller)
+        for kind in ("authentication", "invalid_request", "application_error"):
+            controller.report_failure(kind=kind)
+        assert (controller.state.current_limit, controller.state.overload_count) == (4, 0)
+        controller.report_overload(reason="timeout")
+        assert (controller.state.current_limit, controller.state.timeout_count) == (2, 1)
+        now[0] = 0.5
+        for _ in range(40):
+            controller.report_success(latency_seconds=0.1)
+        assert controller.state.current_limit == 2
+        now[0] = 1.0
+        controller.report_success(latency_seconds=0.1)
+        assert controller.state.current_limit == 3
+        now[0] = 2.0
+        for _ in range(4):
+            controller.report_success(latency_seconds=0.1)
+        assert controller.state.current_limit == 4
+
+
+@pytest.mark.anyio
+async def test_retry_after_extends_cooldown_and_expiry_restores_fast_admission() -> None:
+    async with RemoteConcurrencyController(
+        "endpoint", initial_concurrency=2, cooldown_seconds=1
+    ) as controller:
+        now = fake_clock(controller)
+        controller.report_overload(status_code=429, retry_after="5")
+        assert controller.state.cooldown_remaining_seconds == 5
+        controller.report_overload(status_code=503)
+        assert controller.state.current_limit == 1
+        assert controller.state.cooldown_remaining_seconds == 5
+        now[0] = 5.0
+        assert controller.state.cooldown_remaining_seconds == 0
+        with anyio.fail_after(1):
+            async with controller.slot():
+                assert controller.state.in_flight == 1
+
+
+@pytest.mark.anyio
+async def test_capacity_drop_while_requests_are_active_drains_before_admitting() -> None:
+    async with RemoteConcurrencyController(
+        "endpoint", initial_concurrency=4, max_concurrency=8, max_waiters=4
+    ) as controller:
+        holders = [anyio.Event() for _ in range(4)]
+        admitted = anyio.Event()
+
+        async def hold(release: anyio.Event) -> None:
+            async with controller.slot():
+                await release.wait()
+
+        async def late() -> None:
+            async with controller.slot():
+                admitted.set()
+
+        async with anyio.create_task_group() as tasks:
+            for release in holders:
+                tasks.start_soon(hold, release)
+            with anyio.fail_after(2):
+                while controller.state.in_flight != 4:
+                    await anyio.lowlevel.checkpoint()
+            controller.report_capacity(2)
+            assert (controller.state.current_limit, controller.state.in_flight) == (2, 4)
+            tasks.start_soon(late)
+            with anyio.fail_after(2):
+                while controller.state.pending_count != 1:
+                    await anyio.lowlevel.checkpoint()
+            holders[0].set()
+            holders[1].set()
+            with anyio.fail_after(2):
+                while controller.state.in_flight != 2:
+                    await anyio.lowlevel.checkpoint()
+            for _ in range(10):
+                await anyio.lowlevel.checkpoint()
+            assert not admitted.is_set()
+            holders[2].set()
+            with anyio.fail_after(2):
+                await admitted.wait()
+            holders[3].set()
+        assert (controller.state.in_flight, controller.state.pending_count) == (0, 0)
+
+
+@settings(max_examples=200, deadline=None)
+@given(
+    st.lists(
+        st.one_of(
+            st.tuples(st.just("success"), st.floats(0, 5)),
+            st.tuples(st.just("overload"), st.sampled_from([429, 503])),
+            st.tuples(st.just("failure"), st.sampled_from(["authentication", "application_error"])),
+            st.tuples(st.just("capacity"), st.one_of(st.none(), st.integers(2, 12))),
+            st.tuples(st.just("advance"), st.floats(0, 3)),
+        ),
+        max_size=80,
+    )
+)
+def test_feedback_sequences_keep_the_limit_within_bounds(operations: list[tuple]) -> None:
+    controller = RemoteConcurrencyController(
+        "property", min_concurrency=2, initial_concurrency=3, max_concurrency=10
+    )
+    controller._owner._thread = threading.get_ident()
+    now = fake_clock(controller)
+    for name, value in operations:
+        if name == "success":
+            controller.report_success(latency_seconds=value)
+        elif name == "overload":
+            controller.report_overload(status_code=value)
+        elif name == "failure":
+            controller.report_failure(kind=value)
+        elif name == "capacity":
+            controller.report_capacity(value)
+        else:
+            now[0] += value
+        state = controller.state
+        assert 2 <= state.current_limit <= 10
+        if state.authoritative_capacity is not None:
+            assert state.current_limit <= state.authoritative_capacity
+        for change in state.history:
+            assert change.new_limit != change.previous_limit
+
+
+async def _local_manager(snapshot: ResourceSnapshot) -> ResourceManager:
+    manager = ResourceManager(
+        ResourceConfig.model_validate(
+            {"cpu_memory_interval_seconds": 60, "cpu_budget_fraction": 1, "max_concurrency": 2}
+        )
+    )
+    await manager.start()
+    assert manager._runtime is not None
+    manager._runtime._snapshot = snapshot
+    return manager
+
+
+@pytest.mark.anyio
+async def test_local_and_remote_admission_release_both_on_every_path(
+    snapshot: ResourceSnapshot,
+) -> None:
+    memory = {"memory": "1GB"}
+    manager = await _local_manager(snapshot)
+    remote = manager.remote_concurrency("endpoint", wait_timeout_seconds=0.05)
+
+    async def assert_no_leaks() -> None:
+        state = await manager.admission_state()
+        assert (state.active_reservations, state.queue_depth) == (0, 0)
+        assert (remote.state.in_flight, remote.state.pending_count) == (0, 0)
+
+    try:
+        async with remote:
+            async with remote.slot():
+                with pytest.raises(RemoteConcurrencyRejectedError, match="timed out"):
+                    async with manager.admission(memory), remote.slot():
+                        pytest.fail("the remote permit is exhausted")
+                assert (await manager.admission_state()).active_reservations == 0
+                with anyio.CancelScope() as scope:
+                    async with manager.admission(memory):
+                        scope.cancel()
+                        async with remote.slot():
+                            pytest.fail("cancelled while waiting for the remote permit")
+                assert scope.cancelled_caught
+                assert (await manager.admission_state()).active_reservations == 0
+            await assert_no_leaks()
+
+            with pytest.raises(OSError, match="workload failed"):
+                async with manager.admission(memory), remote.slot():
+                    raise OSError("workload failed")
+            await assert_no_leaks()
+
+            with anyio.CancelScope() as scope:
+                async with manager.admission(memory), remote.slot():
+                    scope.cancel()
+                    await anyio.sleep_forever()
+            assert scope.cancelled_caught
+            await assert_no_leaks()
+
+            held = [await manager.reserve(memory) for _ in range(2)]
+            with pytest.raises(AdmissionRejectedError):
+                async with remote.slot(), manager.admission(memory):
+                    pytest.fail("local capacity is exhausted")
+            for lease in held:
+                await manager.release(lease)
+            await assert_no_leaks()
+
+            for _ in range(50):
+                async with manager.admission(memory), remote.slot():
+                    remote.report_success(latency_seconds=0.01)
+            await assert_no_leaks()
+            assert remote.state.success_count == 50
+    finally:
+        await manager.close()

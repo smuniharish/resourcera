@@ -119,6 +119,8 @@ The controller adjusts within the configured bounds:
 - **Overload feedback.** `controller.signal_overload(reason)` halves the limit
   immediately when the application observes local resource overload. For remote
   service feedback, use a separate [remote controller](remote-concurrency.md).
+  Call it from the controller's event-loop thread; other threads raise
+  `RuntimeError` and should use `anyio.from_thread.run_sync`.
 
 If capacity collapses while work runs, the limit can remain at the active count
 and decrease as work finishes. Use `signal_overload` if you need to reduce the
@@ -170,6 +172,8 @@ callable has finished:
   cancelled.
 - If the callable is already running, the cancellation is delivered after it
   completes, so capacity is never released while a thread is still working.
+  Python cannot forcibly stop a running thread or native call, so cancellation
+  may be delayed for as long as the callable runs.
 - Exceptions raised by the callable propagate to the caller.
 - `run_sync` never shuts the executor down. If the executor is already shut down,
   `submit` raises `RuntimeError` and the slot is released.

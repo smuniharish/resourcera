@@ -996,3 +996,48 @@ def test_workload_requirements_accept_the_disk_profile() -> None:
     assert requirements.profile == WorkloadProfile.DISK_BOUND
     with pytest.raises(ValueError, match="at least one resource requirement"):
         WorkloadRequirements(profile="io-bound")
+
+
+@pytest.mark.anyio
+async def test_run_sync_holds_the_reservation_until_a_cancelled_worker_finishes(
+    snapshot: ResourceSnapshot,
+) -> None:
+    manager = await start_manager(snapshot, settings())
+    started = threading.Event()
+    proceed = threading.Event()
+    executor = ThreadPoolExecutor(max_workers=1)
+
+    def blocking() -> None:
+        started.set()
+        proceed.wait(5)
+
+    try:
+        async with manager.adaptive_concurrency(MEMORY, max_concurrency=2) as controller:
+            with pytest.raises(RuntimeError, match="from_thread"):
+                await anyio.to_thread.run_sync(controller.signal_overload)
+            async with anyio.create_task_group() as group:
+                running = anyio.CancelScope()
+                queued = anyio.CancelScope()
+
+                async def call(scope: anyio.CancelScope) -> None:
+                    with scope:
+                        await controller.run_sync(executor, blocking)
+
+                group.start_soon(call, running)
+                await anyio.to_thread.run_sync(started.wait, 5)
+                group.start_soon(call, queued)
+                await eventually(lambda: controller.state.active_count == 2)
+                queued.cancel()
+                await eventually(lambda: controller.state.active_count == 1)
+                running.cancel()
+                for _ in range(5):
+                    await anyio.sleep(0.01)
+                state = await manager.admission_state()
+                assert (controller.state.active_count, state.active_reservations) == (1, 1)
+                proceed.set()
+            assert controller.state.active_count == 0
+            assert (await manager.admission_state()).active_reservations == 0
+    finally:
+        proceed.set()
+        executor.shutdown(wait=True)
+        await manager.close()

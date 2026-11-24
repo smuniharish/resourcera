@@ -20,6 +20,7 @@ uv run python examples/resource_admission.py
 | `resource_admission.py`, `adaptive_concurrency.py` | Admission and bounded work |
 | `bounded_producer.py` | Producer backpressure with a bounded AnyIO stream |
 | `remote_feedback.py` | Independent feedback controllers for simulated endpoints |
+| `local_remote_composition.py` | Local admission combined with one reused remote controller |
 | `threadpool_workers.py` | Sizing a `ThreadPoolExecutor` and bounding its submissions |
 | `adaptive_asyncio.py`, `adaptive_anyio.py` | Replacing fixed semaphores and capacity limiters |
 | `network_concurrency.py` | Network-bound limits and overload feedback |

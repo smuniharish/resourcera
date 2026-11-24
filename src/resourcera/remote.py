@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import threading
 import time
 from collections import deque
 from datetime import UTC, datetime
@@ -11,10 +12,45 @@ from types import TracebackType
 from typing import Literal
 
 import anyio
+import anyio.lowlevel
 from pydantic import Field
 
 from resourcera.exceptions import ManagerStateError, ResourceError
 from resourcera.models import FrozenModel
+
+
+def _in_event_loop() -> bool:
+    try:
+        anyio.lowlevel.current_token()
+    except Exception:
+        return False
+    return True
+
+
+class _ThreadOwner:
+    """Bind a controller's mutable state to the thread running its event loop.
+
+    The first call made from inside an event loop (or construction inside one) binds the
+    owner. Calls from any other thread are rejected instead of mutating AnyIO primitives
+    off-loop; worker threads should use ``anyio.from_thread.run_sync``.
+    """
+
+    __slots__ = ("_thread",)
+
+    def __init__(self) -> None:
+        self._thread = threading.get_ident() if _in_event_loop() else None
+
+    def check(self) -> None:
+        thread = threading.get_ident()
+        if self._thread == thread:
+            return
+        if self._thread is None and _in_event_loop():
+            self._thread = thread
+            return
+        raise RuntimeError(
+            "controllers must be used from the thread running their event loop; "
+            "from a worker thread, call anyio.from_thread.run_sync(...) instead"
+        )
 
 
 class RemoteConcurrencyRejectedError(ResourceError):
@@ -75,7 +111,9 @@ def _retry_after_seconds(value: str | None) -> float:
 class RemoteConcurrencyController:
     """Limit requests to one endpoint using only application-supplied feedback.
 
-    A controller belongs to its creating event loop and process. Separate controller
+    A controller belongs to the event loop and thread that first use it, and to its
+    process. Feedback and acquisition from another thread raise ``RuntimeError``; use
+    ``anyio.from_thread.run_sync`` to report from worker threads. Separate controller
     instances do not share state, even when their keys are equal.
     """
 
@@ -144,6 +182,7 @@ class RemoteConcurrencyController:
         self._reason = "Initial limit; awaiting remote feedback."
         self._closed = False
         self._entered = False
+        self._owner = _ThreadOwner()
 
     @property
     def state(self) -> RemoteConcurrencyState:
@@ -188,6 +227,7 @@ class RemoteConcurrencyController:
         self, *, latency_seconds: float, remote_queue_wait_seconds: float | None = None
     ) -> None:
         """Record one successful request and cautiously increase on sustained feedback."""
+        self._owner.check()
         if self._closed:
             raise ManagerStateError("the remote controller is closed")
         if not 0 <= latency_seconds < float("inf"):
@@ -255,6 +295,7 @@ class RemoteConcurrencyController:
         retry_after: str | None = None,
     ) -> None:
         """Report overload; repeated feedback during one cooldown is aggregated."""
+        self._owner.check()
         if self._closed:
             raise ManagerStateError("the remote controller is closed")
         if status_code is not None and status_code not in (429, 503):
@@ -281,6 +322,7 @@ class RemoteConcurrencyController:
         self, *, kind: Literal["authentication", "invalid_request", "application_error"]
     ) -> None:
         """Record a non-congestion failure without classifying it as overload."""
+        self._owner.check()
         if self._closed:
             raise ManagerStateError("the remote controller is closed")
         if kind not in ("authentication", "invalid_request", "application_error"):
@@ -291,6 +333,7 @@ class RemoteConcurrencyController:
 
     def report_capacity(self, capacity: int | None) -> None:
         """Set or clear an authoritative endpoint ceiling; increases remain gradual."""
+        self._owner.check()
         if self._closed:
             raise ManagerStateError("the remote controller is closed")
         if capacity is not None and (isinstance(capacity, bool) or not isinstance(capacity, int)):
@@ -308,6 +351,7 @@ class RemoteConcurrencyController:
         return RemoteSlot(self)
 
     async def _acquire(self, token: object) -> None:
+        self._owner.check()
         if self._closed:
             raise ManagerStateError("the remote controller is closed")
         if self._clock() >= self._cooldown_until:

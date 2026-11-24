@@ -25,4 +25,6 @@ isolation. Do not use a network filesystem, copy a live database between machine
 or allow untrusted writers. Nonparticipants are not coordinated. Process suspension,
 clock/OS failures, and lost renewals can cause lease loss; applications using
 standalone leases must check or renew them and stop work on loss. Keep the manager
-open for the entire workload lifetime.
+open for the entire workload lifetime. Closing a manager releases the leases it
+owns. Reservations are flat: hierarchical budgets, such as a per-session budget
+nested inside a global one, are not supported.

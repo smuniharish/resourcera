@@ -30,6 +30,7 @@ from resourcera.models import (
     ResourceSnapshot,
     WorkloadRequirements,
 )
+from resourcera.remote import _ThreadOwner
 
 if TYPE_CHECKING:
     from resourcera.manager import ResourceManager, _AdmissionContext
@@ -237,6 +238,7 @@ class ConcurrencyController:
         self._reason = "The controller has not evaluated capacity yet."
         self._calibrated = False
         self._closed = False
+        self._owner = _ThreadOwner()
 
     @property
     def current_limit(self) -> int:
@@ -419,7 +421,11 @@ class ConcurrencyController:
         )
 
     def signal_overload(self, reason: str = "The application reported overload.") -> None:
-        """Halve the limit immediately after external feedback such as timeouts or HTTP 429."""
+        """Halve the limit immediately after external feedback such as timeouts or HTTP 429.
+
+        Call it from the controller's event-loop thread; other threads raise ``RuntimeError``.
+        """
+        self._owner.check()
         if self._closed or self._recommendation is None:
             return
         limit = max(self._minimum, self.current_limit // 2)
@@ -442,6 +448,7 @@ class ConcurrencyController:
         )
 
     async def _acquire(self, token: object) -> None:
+        self._owner.check()
         if self._closed:
             raise ManagerStateError("the concurrency controller is closed")
         try:

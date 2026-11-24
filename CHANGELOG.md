@@ -18,6 +18,18 @@
   not degraded.
 - Defer costly Windows swap sampling to the slower sampling cycle, preserving
   unavailable and stale status rather than inventing measurements.
+- Never return a lease once manager shutdown has begun: a reservation that
+  commits while `close()` is running is released and the caller receives
+  `ManagerStateError`. Previously, a reservation that committed concurrently with
+  `close()` could be returned after shutdown had already released it.
+- Bind remote controllers and adaptive-controller feedback to their event-loop
+  thread. Feedback or acquisition from another thread now raises `RuntimeError`
+  instead of mutating AnyIO limiter state off-loop; use
+  `anyio.from_thread.run_sync` from worker threads.
+- Document remote adaptation windows, low-traffic and no-feedback behavior,
+  failure classification, controller reuse, local and remote admission
+  composition, shutdown semantics, admission fairness, and thread cancellation;
+  add the `local_remote_composition.py` example.
 
 ## Unreleased (0.2.1)
 

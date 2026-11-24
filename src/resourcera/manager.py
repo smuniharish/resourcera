@@ -1145,10 +1145,16 @@ class ResourceManager:
                     delivery=delivery,
                 )
             )
+            # Shutdown may have begun while the lease crossed back to this task; it would
+            # already be released, so it must not be delivered.
+            if self._state != "running":
+                raise ManagerStateError(
+                    "the resource manager closed before the lease was delivered"
+                )
             delivery.set()
             return lease
         except BaseException:
-            if runtime is not None:
+            if runtime is not None and self._state != "closed":
                 with anyio.CancelScope(shield=True):
                     try:
                         if portal is not None:

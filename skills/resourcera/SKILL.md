@@ -82,6 +82,9 @@ anyio.run(main)
 - Concurrency limits stay at the minimum while capacity is unknown; never bypass
   them with a fixed fallback. Network bandwidth alone does not determine request
   concurrency. Do not mutate `ThreadPoolExecutor` internals.
+- Create one remote controller per endpoint and reuse it; never one per request.
+  Report feedback on its event-loop thread, or marshal it with
+  `anyio.from_thread.run_sync`. Hierarchical reservations are not supported.
 
 ## References
 

@@ -201,6 +201,11 @@ async def test_waiters_are_bounded_and_prioritized(snapshot: ResourceSnapshot) -
                 await manager.reserve({"memory": "1GB"}, wait=True)
             with pytest.raises(AdmissionRejectedError, match="queued"):
                 await manager.reserve({"memory": "1GB"})
+            # Windows Python 3.12 monotonic ticks are ~15.6 ms; let the clock advance
+            # past both enqueue times so the recorded wait is observable.
+            queued_at = time.monotonic()
+            while time.monotonic() <= queued_at:  # noqa: ASYNC110 - polls the clock itself
+                await anyio.sleep(0.001)
             await manager.release(held)
         assert order == [10, 1]
         state = await manager.admission_state()
@@ -405,6 +410,117 @@ async def test_cancelled_duplicate_does_not_revoke_delivered_lease(
                 await finished.wait()
         assert (await manager.reservation(delivered)).id == delivered.id
         await manager.release(delivered)
+    finally:
+        await manager.close()
+
+
+@pytest.mark.anyio
+async def test_shutdown_during_commit_never_delivers_the_lease(
+    snapshot: ResourceSnapshot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from resourcera.coordination import _PROCESS_RECORDS
+
+    manager = await start_manager(snapshot, settings(max_concurrency=1))
+    assert manager._runtime is not None
+    store = manager._runtime.coordinator()._store
+    acquire = store.acquire
+    committed = threading.Event()
+    proceed = threading.Event()
+
+    def paused(*args):
+        result = acquire(*args)
+        committed.set()
+        if not proceed.wait(3):
+            raise RuntimeError("test transaction did not resume")
+        return result
+
+    monkeypatch.setattr(store, "acquire", paused)
+    outcome: list[object] = []
+
+    async def request() -> None:
+        try:
+            outcome.append(await manager.reserve({"memory": "1GB"}, lease_id="raced"))
+        except ManagerStateError as exc:
+            outcome.append(exc)
+
+    async def shutdown() -> None:
+        await manager.close()
+
+    try:
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(request)
+            with anyio.fail_after(3):
+                assert await anyio.to_thread.run_sync(committed.wait, 2)
+            tasks.start_soon(shutdown)
+            with anyio.fail_after(3):
+                while manager._state == "running":
+                    await anyio.lowlevel.checkpoint()
+            proceed.set()
+        assert len(outcome) == 1
+        assert isinstance(outcome[0], ManagerStateError)
+        assert "raced" not in _PROCESS_RECORDS
+        assert manager._state == "closed"
+    finally:
+        proceed.set()
+        await manager.close()
+
+
+@pytest.mark.anyio
+async def test_concurrent_and_repeated_shutdown_wake_queued_waiters(
+    snapshot: ResourceSnapshot,
+) -> None:
+    manager = await start_manager(snapshot, settings(max_concurrency=1, max_waiters=4))
+    held = await manager.reserve({"memory": "1GB"})
+    errors: list[BaseException] = []
+
+    async def waiting() -> None:
+        try:
+            await manager.reserve({"memory": "1GB"}, wait=True, wait_timeout_seconds=None)
+        except ManagerStateError as exc:
+            errors.append(exc)
+
+    async with anyio.create_task_group() as tasks:
+        for _ in range(3):
+            tasks.start_soon(waiting)
+        with anyio.fail_after(3):
+            while (await manager.admission_state()).queue_depth != 3:
+                await anyio.lowlevel.checkpoint()
+        for _ in range(3):
+            tasks.start_soon(manager.close)
+    assert len(errors) == 3
+    assert manager._state == "closed"
+    await manager.close()
+    with pytest.raises(ManagerStateError):
+        await manager.reserve({"memory": "1GB"})
+    with pytest.raises(ManagerStateError):
+        await manager.release(held)
+    with pytest.raises(ManagerStateError):
+        await manager.start()
+
+
+@pytest.mark.anyio
+async def test_repeated_acquire_release_cancel_cycles_do_not_leak(
+    snapshot: ResourceSnapshot,
+) -> None:
+    manager = await start_manager(snapshot, settings(max_concurrency=2, max_waiters=64))
+    try:
+        for round_number in range(20):
+            async with anyio.create_task_group() as tasks:
+
+                async def worker(index: int) -> None:
+                    with anyio.CancelScope() as scope:
+                        if index % 3 == 0:
+                            scope.cancel()
+                        async with manager.admission(
+                            {"memory": "1GB"}, wait=True, wait_timeout_seconds=None
+                        ):
+                            await anyio.lowlevel.checkpoint()
+
+                for index in range(12):
+                    tasks.start_soon(worker, index + round_number)
+            state = await manager.admission_state()
+            assert (state.queue_depth, state.active_reservations) == (0, 0)
+        assert (await manager.capacity({"memory": "1GB"})).max_concurrency == 2
     finally:
         await manager.close()
 
