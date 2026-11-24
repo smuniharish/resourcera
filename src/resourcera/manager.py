@@ -21,7 +21,6 @@ from weakref import WeakSet
 
 import anyio
 from anyio.from_thread import BlockingPortal, start_blocking_portal
-from anyio.lowlevel import EventLoopToken
 from pydantic import ValidationError
 
 from resourcera.accelerators import (
@@ -67,7 +66,7 @@ from resourcera.models import (
     WorkloadRequirements,
 )
 from resourcera.overhead import OverheadController, OverheadState, managed_size
-from resourcera.remote import RemoteConcurrencyController
+from resourcera.remote import RemoteConcurrencyController, _require_count, _schedule_in_loop
 from resourcera.telemetry import SystemSampler, Telemetry
 
 if TYPE_CHECKING:
@@ -78,16 +77,6 @@ _LOG = logging.getLogger(__name__)
 
 class _Unset(Enum):
     TOKEN = 0
-
-
-def _schedule_in_loop(token: EventLoopToken, callback: Callable[[], None]) -> None:
-    native = token.native_token
-    scheduler = getattr(native, "call_soon_threadsafe", None)
-    if scheduler is None:
-        scheduler = getattr(native, "run_sync_soon", None)
-    if scheduler is None:
-        raise RuntimeError("unsupported event loop for cross-thread notification")
-    scheduler(callback)
 
 
 async def _portal_call[T](portal: BlockingPortal, operation: Callable[[], Awaitable[T]]) -> T:
@@ -1246,8 +1235,7 @@ class ResourceManager:
         maximum = self.config.max_concurrency if max_concurrency is None else max_concurrency
         validate_bounds(min_concurrency, maximum)
         waiters = self.config.max_waiters if max_waiters is None else max_waiters
-        if waiters < 1:
-            raise ValueError("max_waiters must be positive")
+        _require_count("max_waiters", waiters, 1)
         permit_timeout = (
             self.config.concurrency_wait_timeout_seconds
             if wait_timeout_seconds is _Unset.TOKEN

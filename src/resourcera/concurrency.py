@@ -179,7 +179,7 @@ def recommend(
 
 def validate_bounds(minimum: int, maximum: int) -> None:
     """Reject concurrency bounds that cannot describe a usable limit."""
-    if isinstance(minimum, bool) or isinstance(maximum, bool):
+    if any(isinstance(value, bool) or not isinstance(value, int) for value in (minimum, maximum)):
         raise TypeError("concurrency bounds must be integers")
     if minimum < 1 or maximum < minimum:
         raise ValueError("concurrency bounds require 1 <= min_concurrency <= max_concurrency")
@@ -243,11 +243,16 @@ class ConcurrencyController:
     @property
     def current_limit(self) -> int:
         """The number of slots new work may currently occupy."""
+        self._owner.check_read()
         return int(self._limiter.total_tokens)
 
     @property
     def state(self) -> ConcurrencyState:
-        """Return an immutable view of the controller; no measurement is performed."""
+        """Return an immutable view of the controller; no measurement is performed.
+
+        Read it from the owning thread; other threads raise ``RuntimeError`` once bound.
+        """
+        self._owner.check_read()
         recommendation = self._recommendation
         return ConcurrencyState(
             current_limit=self.current_limit,
@@ -313,6 +318,7 @@ class ConcurrencyController:
 
     async def adjust(self) -> ConcurrencyState:
         """Re-evaluate cached capacity and apply the adjustment policy once."""
+        self._owner.check()
         async with self._adjusting:
             if self._closed:
                 raise ManagerStateError("the concurrency controller is closed")
@@ -501,7 +507,11 @@ class ConcurrencyController:
             return await _completion(future)
 
     def _close(self) -> None:
+        # See RemoteConcurrencyController._close: atomic flag, owner-loop cancellation.
         self._closed = True
+        self._owner.call(self._cancel_waiters)
+
+    def _cancel_waiters(self) -> None:
         for scope in (*self._waiting, *self._admission_waiting):
             scope.cancel()
 
@@ -519,7 +529,7 @@ class ConcurrencyController:
 
 
 async def _completion[T](future: Future[T]) -> T:
-    from resourcera.manager import _schedule_in_loop
+    from resourcera.remote import _schedule_in_loop
 
     token = anyio.lowlevel.current_token()
     done = anyio.Event()
@@ -587,6 +597,7 @@ class ConcurrencySlot:
         if self._admission is None or self._token is None:
             raise ManagerStateError("the concurrency slot was not entered")
         controller = self._controller
+        controller._owner.check()
         try:
             suppressed = await self._admission.__aexit__(exc_type, exc, traceback)
         finally:
@@ -623,6 +634,7 @@ class AdaptiveConcurrency:
     ) -> bool:
         if self._group is None:
             raise ManagerStateError("the adaptive concurrency context was not entered")
+        self._controller._owner.check()
         self._controller._close()
         self._group.cancel_scope.cancel()
         try:

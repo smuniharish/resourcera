@@ -160,9 +160,11 @@ class AdmissionCoordinator:
     def _enqueue(self, waiter: _Waiter) -> None:
         """Insert behind equal or higher priorities and behind exhausted bypass budgets.
 
-        A later, higher-priority waiter may overtake an earlier one at most
-        ``admission_max_bypass`` times, so every waiter is admitted after a bounded number
-        of other admissions. The scan is bounded by ``max_waiters``.
+        The bypass budget is charged at insertion: every waiter a later, higher-priority
+        request is inserted ahead of counts one bypass, even if that request is later
+        cancelled or times out. A waiter charged ``admission_max_bypass`` times is pinned,
+        so it is admitted after at most the waiters ahead of it at enqueue plus
+        ``admission_max_bypass`` others. The scan is bounded by ``max_waiters``.
         """
         position = len(self._waiters)
         while position:

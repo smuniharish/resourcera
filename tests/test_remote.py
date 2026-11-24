@@ -1,5 +1,6 @@
 import math
 import threading
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
 
@@ -18,6 +19,7 @@ from resourcera import (
     ResourceConfig,
     ResourceManager,
 )
+from resourcera import remote as remote_module
 from resourcera.models import ResourceSnapshot
 from resourcera.remote import _retry_after_seconds
 
@@ -359,6 +361,112 @@ async def test_controller_created_off_loop_binds_on_first_loop_use() -> None:
             await anyio.to_thread.run_sync(lambda: controller.report_capacity(1))
         controller.report_capacity(1)
         assert controller.state.authoritative_capacity == 1
+
+
+@pytest.mark.anyio
+async def test_remote_controller_operations_reject_foreign_threads() -> None:
+    controller = RemoteConcurrencyController("endpoint", initial_concurrency=2)
+
+    async def foreign(call: Callable[[], Awaitable[object]]) -> None:
+        # A separate event loop in a worker thread: a real but unsupported caller.
+        with pytest.raises(RuntimeError, match="from_thread"):
+            await anyio.to_thread.run_sync(anyio.run, call)
+
+    async with controller:
+        slot = controller.slot()
+        await slot.__aenter__()
+        with pytest.raises(RuntimeError, match="from_thread"):
+            await anyio.to_thread.run_sync(lambda: controller.state)
+        await foreign(lambda: slot.__aexit__(None, None, None))
+        await foreign(lambda: controller.__aexit__(None, None, None))
+        await foreign(lambda: controller.slot().__aenter__())
+        state = controller.state
+        assert (state.in_flight, state.pending_count, state.closed) == (1, 0, False)
+        await slot.__aexit__(None, None, None)
+        assert controller.state.in_flight == 0
+    assert controller.state.closed
+    other = RemoteConcurrencyController("other")
+    await foreign(other.__aenter__)
+    assert not other._entered
+
+
+@pytest.mark.anyio
+async def test_manager_close_from_another_thread_wakes_waiters_on_the_owner_loop() -> None:
+    # Created outside any event loop so the manager can be closed from another loop.
+    manager = await anyio.to_thread.run_sync(ResourceManager)
+    controller = manager.remote_concurrency("endpoint", max_waiters=2)
+    outcomes: list[str] = []
+
+    async def waiter() -> None:
+        with pytest.raises(ManagerStateError, match="closed while waiting"):
+            async with controller.slot():
+                pytest.fail("a closed controller admitted work")
+        outcomes.append("woken")
+
+    async with controller, controller.slot():
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(waiter)
+            with anyio.fail_after(5):
+                while controller.state.pending_count != 1:
+                    await anyio.lowlevel.checkpoint()
+            await anyio.to_thread.run_sync(anyio.run, manager.close)
+            # The flag is set at once; waiter cancellation runs on this loop.
+            assert controller.state.closed
+            with pytest.raises(ManagerStateError):
+                controller.report_success(latency_seconds=0.1)
+        assert controller.state.in_flight == 1
+    assert outcomes == ["woken"]
+    assert (controller.state.in_flight, controller.state.pending_count) == (0, 0)
+
+
+def _race_first_use(controller: RemoteConcurrencyController, racers: int) -> list[bool]:
+    barrier = threading.Barrier(racers)
+    results: list[bool] = []
+    token = remote_module._current_token
+
+    def synchronized_token() -> object:
+        # Every racer observes an unbound owner before any of them can bind it.
+        barrier.wait(10)
+        return token()
+
+    async def use() -> None:
+        controller.report_success(latency_seconds=0.1)
+
+    def race() -> None:
+        try:
+            anyio.run(use)
+        except RuntimeError:
+            results.append(False)
+        else:
+            results.append(True)
+            winners.append(threading.get_ident())
+
+    winners: list[int] = []
+    threads = [threading.Thread(target=race) for _ in range(racers)]
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(remote_module, "_current_token", synchronized_token)
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+    assert winners == [controller._owner._thread]
+    return results
+
+
+def test_simultaneous_first_use_binds_exactly_one_owner() -> None:
+    for _ in range(3):
+        controller = RemoteConcurrencyController("race")
+        results = _race_first_use(controller, 8)
+        assert sorted(results) == [False] * 7 + [True]
+        owner = controller._owner._thread
+        # Rejected threads changed nothing; ownership stays with the winner.
+        assert controller._successes == 1
+        assert len(controller._samples) == 1
+        with pytest.raises(RuntimeError, match="from_thread"):
+            anyio.run(controller.__aenter__)
+        with pytest.raises(RuntimeError, match="from_thread"):
+            controller.state  # noqa: B018 - property access is the operation under test
+        assert controller._owner._thread == owner
 
 
 @pytest.mark.anyio

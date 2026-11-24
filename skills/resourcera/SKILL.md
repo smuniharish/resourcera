@@ -83,8 +83,10 @@ anyio.run(main)
   them with a fixed fallback. Network bandwidth alone does not determine request
   concurrency. Do not mutate `ThreadPoolExecutor` internals.
 - Create one remote controller per endpoint and reuse it; never one per request.
-  Report feedback on its event-loop thread, or marshal it with
-  `anyio.from_thread.run_sync`. Hierarchical reservations are not supported.
+  Every controller operation (feedback, slots, context, `state`) belongs to the
+  controller's event-loop thread; from other threads marshal calls with
+  `anyio.from_thread.run_sync`. Concurrency counts must be real integers.
+  Hierarchical reservations are not supported.
 
 ## References
 

@@ -35,9 +35,16 @@ Adaptive concurrency controllers re-evaluate capacity every
 `admission_wait_timeout_seconds` defaults to 5 seconds and
 `concurrency_wait_timeout_seconds` defaults to `None` (no permit deadline).
 Either can be configured as `None` for indefinite waits. Queue sizes are still
-bounded. `admission_max_bypass` (default 8) limits how often a queued request can
-be overtaken by later, higher-priority requests. See
+bounded. `admission_max_bypass` (default 8) limits how many later,
+higher-priority requests can be inserted ahead of a queued request. See
 [Admission](../guide/admission.md) for per-call overrides and fairness.
+
+Count fields (`max_provider_concurrency`, `max_concurrency`, `max_waiters`,
+`admission_max_bypass`, `concurrency_increase_step`, `concurrency_history_size`)
+must be real integers. Booleans, floats such as `2.0` and numeric strings such as
+`"8"` are rejected rather than coerced. The same applies to the concurrency
+bounds and `max_waiters` passed to `recommend_concurrency()`,
+`adaptive_concurrency()` and `remote_concurrency()`, which raise `TypeError`.
 
 See the [API reference](../api/index.md) and
 [coordination guide](../guide/coordination.md).

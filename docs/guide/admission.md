@@ -33,13 +33,18 @@ Within one manager the queue uses **bounded bypass**:
 
 - Equal priorities are served in arrival order (FIFO).
 - A later request with a larger priority value may move ahead of an earlier,
-  lower-priority waiter, but each waiter can be overtaken at most
-  `ResourceConfig.admission_max_bypass` times (default 8). After that it is
-  pinned: every later arrival queues behind it, whatever its priority.
+  lower-priority waiter, but each waiter accepts at most
+  `ResourceConfig.admission_max_bypass` such insertions ahead of it (default 8).
+  After that it is pinned: every later arrival queues behind it, whatever its
+  priority.
+- The budget is charged when the later request is **inserted** ahead, not when it
+  is admitted. An overtaker that is later cancelled or times out still counts, so
+  the bound is conservative: cancellations can only make a waiter pin sooner.
 - `admission_max_bypass=0` gives plain arrival order.
 
 A waiter is therefore admitted after at most the requests already ahead of it
-plus `admission_max_bypass` overtakers, provided capacity is eventually released.
+plus `admission_max_bypass` inserted overtakers, provided capacity is eventually
+released.
 There is no time-based priority aging.
 
 Only the request at the head of the queue is evaluated. A large queued request

@@ -37,10 +37,25 @@
   counted as current evidence; sparse endpoints now hold instead of adapting on
   stale feedback.
 - Prevent low-priority admission starvation with bounded bypass: equal priorities
-  stay FIFO, and a waiter can be overtaken by later higher-priority requests at
-  most `ResourceConfig.admission_max_bypass` times (default 8; 0 gives arrival
-  order). Previously, strict priority ordering could starve lower priorities
-  indefinitely.
+  stay FIFO, and at most `ResourceConfig.admission_max_bypass` later
+  higher-priority requests can be inserted ahead of a waiter (default 8; 0 gives
+  arrival order). The budget is charged at insertion, so cancelled or timed-out
+  overtakers still count. Previously, strict priority ordering could starve lower
+  priorities indefinitely.
+- Apply the event-loop ownership contract to every controller operation: remote
+  and adaptive `state` (and `current_limit`), `adjust()`, context entry and exit,
+  and slot release now reject foreign threads with `RuntimeError` instead of
+  touching AnyIO limiters or cancel scopes off-loop. Reads remain allowed before
+  a controller is bound.
+- Make lazy owner binding atomic so concurrent first use from several threads
+  binds exactly one owner.
+- Closing a manager from a non-owner thread now marks its controllers closed
+  immediately and cancels their waiters on the owning event loop instead of
+  cancelling AnyIO scopes from the closing thread.
+- Validate concurrency counts strictly: concurrency bounds and `max_waiters`
+  reject booleans, floats and strings with `TypeError`, and `ResourceConfig`
+  count fields are strict integers. Numeric strings such as `"8"` and floats such
+  as `2.0` were previously coerced and are now rejected.
 
 ## Unreleased (0.2.1)
 

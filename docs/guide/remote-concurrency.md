@@ -94,15 +94,24 @@ in `report_capacity`.
 
 A controller belongs to one event loop thread: the thread it was created on if an
 event loop was running there, otherwise the first event-loop thread that uses it.
-Feedback methods and `slot()` are synchronous with respect to that loop and need
-no extra locking there. Calls from any other thread raise `RuntimeError` without
-changing state. From a worker thread, marshal feedback onto the owning loop:
+Binding is atomic: if several threads use an unbound controller at once, exactly
+one becomes the owner and the others are rejected without changing state. The
+owner never changes afterwards.
+
+Every operation is owner-only: feedback methods, entering and leaving `slot()`,
+entering and leaving the controller context, and reading `remote.state`. They are
+synchronous with respect to the owning loop and need no extra locking there.
+Calls from any other thread raise `RuntimeError` without changing state. Before
+the controller is bound, `state` may be read from any thread. From a worker
+thread, marshal feedback onto the owning loop:
 
 ```python
 anyio.from_thread.run_sync(lambda: remote.report_success(latency_seconds=elapsed))
 ```
 
-Read `remote.state` from the owning loop as well. After the controller or its
+Closing the manager from another thread is allowed: the controller is marked
+closed immediately, and waiting slots are woken on the owning loop. After the
+controller or its
 manager closes, every feedback method (`report_success`, `report_overload`,
 `report_failure`, `report_capacity`) and `slot()` raises `ManagerStateError`
 without changing counters or the limit; `remote.state.closed` is `True`. The

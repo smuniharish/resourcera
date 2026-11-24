@@ -290,6 +290,97 @@ async def test_low_priority_waiter_is_not_starved_by_later_high_priority_traffic
 
 
 @pytest.mark.anyio
+async def test_bypass_budget_is_charged_at_insertion_even_if_the_overtaker_cancels(
+    snapshot: ResourceSnapshot,
+) -> None:
+    manager = await start_manager(
+        snapshot, settings(max_concurrency=1, max_waiters=4, admission_max_bypass=1)
+    )
+    admitted: list[str] = []
+
+    async def queued(depth: int) -> None:
+        with anyio.fail_after(5):
+            while (await manager.admission_state()).queue_depth != depth:
+                await anyio.lowlevel.checkpoint()
+
+    async def waiter(name: str, priority: int, scope: anyio.CancelScope | None = None) -> None:
+        with scope or anyio.CancelScope():
+            lease = await manager.reserve(
+                {"memory": "1GB", "priority": priority}, wait=True, wait_timeout_seconds=None
+            )
+            admitted.append(name)
+            await manager.release(lease)
+
+    try:
+        held = await manager.reserve({"memory": "1GB"})
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(waiter, "low", 0)
+            await queued(1)
+            overtaker = anyio.CancelScope()
+            tasks.start_soon(waiter, "cancelled", 9, overtaker)
+            await queued(2)
+            assert (await manager.admission_state()).priority_distribution == ((9, 1), (0, 1))
+            overtaker.cancel()
+            await queued(1)
+            # The cancelled request already spent the low waiter's only bypass.
+            tasks.start_soon(waiter, "high", 9)
+            await queued(2)
+            await manager.release(held)
+        assert admitted == ["low", "high"]
+        state = await manager.admission_state()
+        assert (state.queue_depth, state.active_reservations) == (0, 0)
+    finally:
+        await manager.close()
+
+
+@pytest.mark.anyio
+async def test_repeated_priority_contention_keeps_the_bypass_bound(
+    snapshot: ResourceSnapshot,
+) -> None:
+    manager = await start_manager(
+        snapshot, settings(max_concurrency=1, max_waiters=8, admission_max_bypass=1)
+    )
+    active = 0
+    peak = 0
+
+    async def queued(depth: int) -> None:
+        with anyio.fail_after(5):
+            while (await manager.admission_state()).queue_depth != depth:
+                await anyio.lowlevel.checkpoint()
+
+    try:
+        for round_ in range(3):
+            admitted: list[str] = []
+
+            async def waiter(name: str, priority: int, into: list[str] = admitted) -> None:
+                nonlocal active, peak
+                lease = await manager.reserve(
+                    {"memory": "1GB", "priority": priority}, wait=True, wait_timeout_seconds=None
+                )
+                active += 1
+                peak = max(peak, active)
+                into.append(name)
+                await anyio.lowlevel.checkpoint()
+                active -= 1
+                await manager.release(lease)
+
+            held = await manager.reserve({"memory": "1GB"})
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(waiter, "low", 0)
+                await queued(1)
+                for index in range(3):
+                    tasks.start_soon(waiter, f"high-{index}", 5 + round_)
+                    await queued(2 + index)
+                await manager.release(held)
+            assert admitted == ["high-0", "low", "high-1", "high-2"], round_
+            state = await manager.admission_state()
+            assert (state.queue_depth, state.active_reservations) == (0, 0)
+        assert peak == 1
+    finally:
+        await manager.close()
+
+
+@pytest.mark.anyio
 async def test_shutdown_with_mixed_priorities_rejects_every_waiter(
     snapshot: ResourceSnapshot,
 ) -> None:

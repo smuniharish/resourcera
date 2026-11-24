@@ -1,6 +1,7 @@
 import math
 import threading
 import time
+from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 
 import anyio
@@ -139,6 +140,13 @@ async def test_recommendation_uses_capacity_bounds_and_reservations(
             await manager.recommend_concurrency(MEMORY, min_concurrency=3, max_concurrency=2)
         with pytest.raises(ValueError, match="bounds"):
             await manager.recommend_concurrency(MEMORY, min_concurrency=0)
+        for bad in (True, 2.0, 2.5, "2"):
+            with pytest.raises(TypeError, match="integers"):
+                await manager.recommend_concurrency(MEMORY, min_concurrency=bad)  # type: ignore[arg-type]
+            with pytest.raises(TypeError, match="integers"):
+                await manager.recommend_concurrency(MEMORY, max_concurrency=bad)  # type: ignore[arg-type]
+            with pytest.raises(TypeError, match="integers"):
+                manager.adaptive_concurrency(MEMORY, max_concurrency=bad)  # type: ignore[arg-type]
     finally:
         await manager.close()
 
@@ -472,6 +480,13 @@ async def test_wait_timeout_and_slot_reuse(snapshot: ResourceSnapshot) -> None:
             assert (controller.state.rejected_count, controller.state.timeout_count) == (1, 1)
         with pytest.raises(ValueError, match="max_waiters"):
             manager.adaptive_concurrency(MEMORY, max_waiters=0)
+        for bad in (True, 4.0, "4"):
+            with pytest.raises(TypeError, match="max_waiters"):
+                manager.adaptive_concurrency(MEMORY, max_waiters=bad)  # type: ignore[arg-type]
+        for field in ("max_concurrency", "max_waiters", "admission_max_bypass"):
+            for bad in (True, 2.0, "2"):
+                with pytest.raises(ValueError, match=field):
+                    ResourceConfig.model_validate({field: bad})
         with pytest.raises(ValueError, match="wait_timeout"):
             manager.adaptive_concurrency(MEMORY, wait_timeout_seconds=0)
     finally:
@@ -1040,4 +1055,43 @@ async def test_run_sync_holds_the_reservation_until_a_cancelled_worker_finishes(
     finally:
         proceed.set()
         executor.shutdown(wait=True)
+        await manager.close()
+
+
+@pytest.mark.anyio
+async def test_adaptive_controller_operations_reject_foreign_threads(
+    snapshot: ResourceSnapshot,
+) -> None:
+    manager = await start_manager(snapshot, settings())
+
+    async def foreign(call: Callable[[], Awaitable[object]]) -> None:
+        # A separate event loop in a worker thread: a real but unsupported caller.
+        with pytest.raises(RuntimeError, match="from_thread"):
+            await anyio.to_thread.run_sync(anyio.run, call)
+
+    try:
+        context = manager.adaptive_concurrency(MEMORY, max_concurrency=2)
+        async with context as controller:
+            slot = controller.slot()
+            await slot.__aenter__()
+            before = controller.state
+            with pytest.raises(RuntimeError, match="from_thread"):
+                await anyio.to_thread.run_sync(lambda: controller.state)
+            with pytest.raises(RuntimeError, match="from_thread"):
+                await anyio.to_thread.run_sync(lambda: controller.current_limit)
+            await foreign(controller.adjust)
+            await foreign(lambda: slot.__aexit__(None, None, None))
+            await foreign(lambda: context.__aexit__(None, None, None))
+            state = controller.state
+            assert (state.active_count, state.closed) == (1, False)
+            assert (state.available_permits, state.history) == (
+                before.available_permits,
+                before.history,
+            )
+            assert (await manager.admission_state()).active_reservations == 1
+            await slot.__aexit__(None, None, None)
+            await controller.adjust()
+        assert controller.state.closed
+        assert (await manager.admission_state()).active_reservations == 0
+    finally:
         await manager.close()
