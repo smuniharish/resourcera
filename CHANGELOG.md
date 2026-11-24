@@ -22,8 +22,8 @@
   commits while `close()` is running is released and the caller receives
   `ManagerStateError`. Previously, a reservation that committed concurrently with
   `close()` could be returned after shutdown had already released it.
-- Bind remote controllers and adaptive-controller feedback to their event-loop
-  thread. Feedback or acquisition from another thread now raises `RuntimeError`
+- Bind remote controllers and adaptive-controller feedback to their owning
+  event loop. Feedback or acquisition from another thread now raises `RuntimeError`
   instead of mutating AnyIO limiter state off-loop; use
   `anyio.from_thread.run_sync` from worker threads.
 - Document remote adaptation windows, low-traffic and no-feedback behavior,
@@ -53,7 +53,8 @@
   on the same thread, a call made outside any loop, or any use after the owning
   loop has ended now raises `RuntimeError` instead of being accepted because the
   thread matched. Ownership never rebinds, and closing a manager after a
-  controller's loop ended completes without error.
+  controller's loop ended completes without error. The contract is documented
+  once, under "Event-loop ownership" in the concurrency guide.
 - Closing a manager from a non-owner thread now marks its controllers closed
   immediately and cancels their waiters on the owning event loop instead of
   cancelling AnyIO scopes from the closing thread.

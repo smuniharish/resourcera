@@ -92,31 +92,24 @@ in `report_capacity`.
 
 ## Ownership, threads and reuse
 
-A controller belongs to one event loop: the loop that was running when it was
-created, otherwise the first event loop that uses it. Ownership is the identity of
-that loop (and the thread running it), not merely the thread: a later event loop
-on the same thread is a different owner. Binding is atomic: if several loops use
-an unbound controller at once, exactly one becomes the owner and the others are
-rejected without changing state. The owner never changes afterwards, even after
-the owning loop ends.
+Remote controllers follow the
+[event-loop ownership contract](concurrency.md#event-loop-ownership): a
+controller belongs to the event loop that first binds it, other threads and other
+loops (including a later loop on the same thread) are rejected with
+`RuntimeError`, and reuse across sequential `anyio.run()` calls or state access
+after the owning loop ends is unsupported.
 
-Every operation is owner-only: feedback methods, entering and leaving `slot()`,
-entering and leaving the controller context, and reading `remote.state`. They are
-synchronous with respect to the owning loop and need no extra locking there.
-Calls from any other thread or event loop, from outside an event loop, or after
-the owning loop has ended raise `RuntimeError` without changing state. Before the
-controller is bound, `state` may be read from anywhere; once bound, capture any
-state you need before the owning loop ends. Create a new controller for each new
-event loop. From a worker thread, marshal feedback onto the owning loop:
+For a remote controller, every operation is owner-only: feedback methods,
+entering and leaving `slot()`, entering and leaving the controller context, and
+reading `remote.state`. They are synchronous with respect to the owning loop and
+need no extra locking there. From a worker thread, marshal feedback onto the
+owning loop:
 
 ```python
 anyio.from_thread.run_sync(lambda: remote.report_success(latency_seconds=elapsed))
 ```
 
-Closing the manager from another thread or event loop is allowed: the controller
-is marked closed immediately, and waiting slots are woken on the owning loop. If
-the owning loop has already ended there is nothing to wake, and closing still
-succeeds. After the controller or its
+After the controller or its
 manager closes, every feedback method (`report_success`, `report_overload`,
 `report_failure`, `report_capacity`) and `slot()` raises `ManagerStateError`
 without changing counters or the limit; `remote.state.closed` is `True`. The

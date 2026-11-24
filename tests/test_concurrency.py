@@ -10,6 +10,7 @@ import pytest
 
 from resourcera import (
     AdmissionRejectedError,
+    ConcurrencyController,
     ConcurrencyState,
     ManagerStateError,
     ReservationError,
@@ -1092,6 +1093,155 @@ async def test_adaptive_controller_operations_reject_foreign_threads(
             await slot.__aexit__(None, None, None)
             await controller.adjust()
         assert controller.state.closed
+        assert (await manager.admission_state()).active_reservations == 0
+    finally:
+        await manager.close()
+
+
+def non_daemon_threads() -> set[threading.Thread]:
+    return {thread for thread in threading.enumerate() if not thread.daemon}
+
+
+def _internals(controller: ConcurrencyController) -> tuple[object, ...]:
+    # Read raw attributes: owner-only accessors are deliberately unusable off the loop.
+    return (
+        controller._limiter.total_tokens,
+        controller._limiter.borrowed_tokens,
+        controller._active,
+        controller._leased,
+        len(controller._waiting),
+        len(controller._admission_waiting),
+        tuple(controller._history),
+        controller._reason,
+        controller._closed,
+        controller._last_change,
+    )
+
+
+def _owner_only_adaptive_calls(
+    controller: ConcurrencyController,
+) -> dict[str, Callable[[], Awaitable[object]]]:
+    async def state() -> object:
+        return controller.state
+
+    async def current_limit() -> object:
+        return controller.current_limit
+
+    async def overload() -> None:
+        controller.signal_overload()
+
+    async def slot() -> None:
+        async with controller.slot():
+            pass
+
+    return {
+        "state": state,
+        "current_limit": current_limit,
+        "adjust": controller.adjust,
+        "signal_overload": overload,
+        "slot": slot,
+    }
+
+
+def _adaptive_controller_from_ended_loop(
+    snapshot: ResourceSnapshot, backend: str
+) -> ConcurrencyController:
+    """Bind a controller in loop A, use it there, then let loop A end."""
+    bound: list[ConcurrencyController] = []
+
+    async def loop_a() -> None:
+        manager = await start_manager(snapshot, settings())
+        try:
+            async with manager.adaptive_concurrency(MEMORY, max_concurrency=2) as controller:
+                async with controller.slot():
+                    pass
+                await controller.adjust()
+                bound.append(controller)
+            assert controller._limiter.borrowed_tokens == 0
+            assert (await manager.admission_state()).active_reservations == 0
+        finally:
+            await manager.close()
+
+    anyio.run(loop_a, backend=backend)
+    return bound[0]
+
+
+@pytest.mark.parametrize(
+    "operation", ["state", "current_limit", "adjust", "signal_overload", "slot"]
+)
+@pytest.mark.parametrize("caller", ["same_thread", "other_thread"])
+def test_adaptive_controller_rejects_other_loops_after_its_loop_ends(
+    snapshot: ResourceSnapshot, anyio_backend: str, caller: str, operation: str
+) -> None:
+    threads = non_daemon_threads()
+    controller = _adaptive_controller_from_ended_loop(snapshot, anyio_backend)
+    before = _internals(controller)
+    call = _owner_only_adaptive_calls(controller)[operation]
+
+    async def loop_b() -> None:
+        tasks = {task.id for task in anyio.get_running_tasks()}
+        with pytest.raises(RuntimeError, match="from_thread"):
+            await call()
+        assert {task.id for task in anyio.get_running_tasks()} == tasks
+
+    if caller == "same_thread":
+        anyio.run(loop_b, backend=anyio_backend)
+    else:
+        with ThreadPoolExecutor(1) as pool:
+            pool.submit(anyio.run, loop_b, backend=anyio_backend).result()
+
+    # The rejection changed nothing and left no borrowers, waiters, or threads behind.
+    assert _internals(controller) == before
+    assert controller._limiter.borrowed_tokens == 0
+    assert not controller._waiting and not controller._admission_waiting
+    # Trio and AnyIO keep idle daemon worker threads cached; nothing else may remain.
+    assert non_daemon_threads() == threads
+
+
+def test_adaptive_controller_rejects_a_running_loop_in_another_thread(
+    snapshot: ResourceSnapshot, anyio_backend: str
+) -> None:
+    async def main() -> None:
+        manager = await start_manager(snapshot, settings())
+        try:
+            async with manager.adaptive_concurrency(MEMORY, max_concurrency=2) as controller:
+                await controller.adjust()
+                before = _internals(controller)
+                for name, call in _owner_only_adaptive_calls(controller).items():
+                    with pytest.raises(RuntimeError, match="from_thread"):
+                        await anyio.to_thread.run_sync(
+                            lambda call=call: anyio.run(call, backend=anyio_backend)
+                        )
+                    assert _internals(controller) == before, name
+                assert (await manager.admission_state()).active_reservations == 0
+        finally:
+            await manager.close()
+
+    anyio.run(main, backend=anyio_backend)
+
+
+@pytest.mark.anyio
+async def test_adaptive_controller_operations_work_on_the_owning_loop(
+    snapshot: ResourceSnapshot,
+) -> None:
+    manager = await start_manager(snapshot, settings())
+    try:
+        async with manager.adaptive_concurrency(MEMORY, max_concurrency=4) as controller:
+            initial = controller.current_limit
+            assert controller.state.current_limit == initial > 1
+            adjusted = await controller.adjust()
+            assert adjusted.current_limit == controller.current_limit == initial
+            async with controller.slot():
+                assert controller.state.active_count == 1
+            controller.signal_overload("test overload")
+            state = controller.state
+            assert state.current_limit == initial // 2
+            assert state.history[-1].previous_limit == initial
+            assert state.history[-1].new_limit == initial // 2
+            assert state.adjustment_reason == "Decreased multiplicatively: test overload"
+            assert (state.active_count, state.available_permits) == (0, initial // 2)
+        assert controller.state.closed
+        assert controller._limiter.borrowed_tokens == 0
         assert (await manager.admission_state()).active_reservations == 0
     finally:
         await manager.close()

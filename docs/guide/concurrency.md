@@ -119,17 +119,7 @@ The controller adjusts within the configured bounds:
 - **Overload feedback.** `controller.signal_overload(reason)` halves the limit
   immediately when the application observes local resource overload. For remote
   service feedback, use a separate [remote controller](remote-concurrency.md).
-  Call it from the controller's event-loop thread; other threads raise
-  `RuntimeError` and should use `anyio.from_thread.run_sync`.
-- **Event-loop ownership.** A controller binds atomically to one event loop (the
-  loop running at creation, or the first loop that uses it); a later loop on the
-  same thread is a different owner. `adjust()`, `signal_overload()`, entering and
-  leaving slots, leaving the controller context, and reading `state` or
-  `current_limit` are owner-only; other threads or loops, and any caller after
-  the owning loop ends, get `RuntimeError` and nothing changes. Reads are allowed
-  from anywhere before binding. Closing the manager from another thread or loop
-  marks the controller closed immediately and wakes its waiters on the owning
-  loop, if that loop is still running.
+  It is owner-only; see [Event-loop ownership](#event-loop-ownership).
 
 If capacity collapses while work runs, the limit can remain at the active count
 and decrease as work finishes. Use `signal_overload` if you need to reduce the
@@ -158,6 +148,36 @@ limit below the active count sooner.
 - Closing the manager cancels admission contexts that are still active. Their
   leases are released, and the controller closes.
 - A lost lease cancels its slot and raises `ReservationError`.
+
+### Event-loop ownership
+
+This contract applies to adaptive controllers and to
+[remote controllers](remote-concurrency.md#ownership-threads-and-reuse).
+
+- **Owner.** A controller belongs to one event loop: the loop running when it was
+  created, otherwise the first event loop that successfully binds it. Ownership is
+  the identity of that loop, checked together with the thread running it; thread
+  identity alone never establishes ownership. Binding is atomic, so when several
+  loops race to first use, exactly one becomes the owner and the others are
+  rejected. The owner never changes.
+- **Owner-only operations.** For adaptive controllers: reading `state` or
+  `current_limit`, `adjust()`, `signal_overload()`, entering and leaving slots,
+  and leaving the controller context. A call from another thread, from another
+  event loop (including a later loop on the same thread), from outside any event
+  loop, or after the owning loop has ended raises `RuntimeError` and changes
+  nothing. Before a controller is bound, its state may be read from anywhere.
+- **Lifecycle.** Create and use a controller within the lifetime of the event
+  loop that owns it. Reusing one across sequential `anyio.run()` calls, or
+  reading its state after its loop has ended, is unsupported and raises
+  `RuntimeError`; capture any state you need before the loop ends, and create a
+  new controller for each new event loop.
+- **Worker threads.** Marshal owner-only calls onto the owning loop with
+  `anyio.from_thread.run_sync`, for example
+  `anyio.from_thread.run_sync(controller.signal_overload)`.
+- **Shutdown.** `manager.close()` may run on another thread or event loop. It
+  marks each controller closed immediately and schedules waiter cancellation on
+  the owning loop; if that loop has already ended there is nothing to wake, and
+  closing still succeeds.
 
 ## ThreadPoolExecutor submissions
 
