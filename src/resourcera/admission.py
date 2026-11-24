@@ -38,11 +38,12 @@ class _Owned:
     on_loss: Callable[[], None] | None = None
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, eq=False)
 class _Waiter:
     priority: int
     sequence: int
     started: float
+    bypassed: int = 0
 
 
 class AdmissionCoordinator:
@@ -156,6 +157,26 @@ class AdmissionCoordinator:
         self._completed_wait_count += 1
         self._total_wait_seconds += max(0.0, time.monotonic() - waiter.started)
 
+    def _enqueue(self, waiter: _Waiter) -> None:
+        """Insert behind equal or higher priorities and behind exhausted bypass budgets.
+
+        A later, higher-priority waiter may overtake an earlier one at most
+        ``admission_max_bypass`` times, so every waiter is admitted after a bounded number
+        of other admissions. The scan is bounded by ``max_waiters``.
+        """
+        position = len(self._waiters)
+        while position:
+            ahead = self._waiters[position - 1]
+            if (
+                ahead.priority >= waiter.priority
+                or ahead.bypassed >= self.config.admission_max_bypass
+            ):
+                break
+            position -= 1
+        for overtaken in self._waiters[position:]:
+            overtaken.bypassed += 1
+        self._waiters.insert(position, waiter)
+
     async def _rejected(self, requirements: WorkloadRequirements, reason: str) -> AdmissionDecision:
         capacity = await self.capacity(requirements)
         return AdmissionDecision(
@@ -260,8 +281,7 @@ class AdmissionCoordinator:
                     )
                 self._sequence += 1
                 waiter = _Waiter(requirements.priority, self._sequence, time.monotonic())
-                self._waiters.append(waiter)
-                self._waiters.sort(key=lambda item: (-item.priority, item.sequence))
+                self._enqueue(waiter)
                 self._notify()
             while True:
                 async with self._lock:

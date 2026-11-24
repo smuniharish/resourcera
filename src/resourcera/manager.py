@@ -1287,6 +1287,8 @@ class ResourceManager:
         cooldown_seconds: float = 1.0,
         minimum_samples: int = 4,
         history_size: int = 32,
+        max_samples: int = 256,
+        sample_max_age_seconds: float | None = None,
     ) -> RemoteConcurrencyController:
         """Create an independent process-local controller for application feedback."""
         if self._state in {"closing", "closed"}:
@@ -1302,6 +1304,8 @@ class ResourceManager:
             cooldown_seconds=cooldown_seconds,
             minimum_samples=minimum_samples,
             history_size=history_size,
+            max_samples=max_samples,
+            sample_max_age_seconds=sample_max_age_seconds,
         )
         self._remote_controllers.add(controller)
         return controller

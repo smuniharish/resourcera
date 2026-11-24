@@ -115,6 +115,11 @@ class RemoteConcurrencyController:
     process. Feedback and acquisition from another thread raise ``RuntimeError``; use
     ``anyio.from_thread.run_sync`` to report from worker threads. Separate controller
     instances do not share state, even when their keys are equal.
+
+    Adaptation uses at most ``max_samples`` recent outcomes no older than
+    ``sample_max_age_seconds``. A window is judged only after
+    ``observation_window_seconds`` and at least ``minimum_samples`` fresh outcomes,
+    then cleared; with fewer fresh outcomes the limit holds.
     """
 
     def __init__(
@@ -130,6 +135,8 @@ class RemoteConcurrencyController:
         cooldown_seconds: float = 1.0,
         minimum_samples: int = 4,
         history_size: int = 32,
+        max_samples: int = 256,
+        sample_max_age_seconds: float | None = None,
     ) -> None:
         if not key or not key.strip():
             raise ValueError("key must not be empty")
@@ -154,6 +161,16 @@ class RemoteConcurrencyController:
             raise TypeError("history_size must be an integer")
         if minimum_samples < 2 or not 1 <= history_size <= 1024:
             raise ValueError("minimum_samples must be at least 2 and history_size must be 1-1024")
+        if isinstance(max_samples, bool) or not isinstance(max_samples, int):
+            raise TypeError("max_samples must be an integer")
+        if not minimum_samples <= max_samples <= 4096:
+            raise ValueError("max_samples must be between minimum_samples and 4096")
+        if sample_max_age_seconds is None:
+            sample_max_age_seconds = max(30.0, 4 * observation_window_seconds)
+        if not observation_window_seconds <= sample_max_age_seconds < float("inf"):
+            raise ValueError(
+                "sample_max_age_seconds must be finite and at least observation_window_seconds"
+            )
         self.key = key
         self._minimum = min_concurrency
         self._initial = initial_concurrency
@@ -170,8 +187,11 @@ class RemoteConcurrencyController:
         self._window_started = self._clock()
         self._cooldown_until = 0.0
         self._successes = self._failures = 0
-        self._window_successes = self._window_failures = 0
-        self._window_queue_samples = 0
+        self._max_age = sample_max_age_seconds
+        # (monotonic time, success, latency, remote queue wait); bounded by count and age.
+        self._samples: deque[tuple[float, bool, float | None, float | None]] = deque(
+            maxlen=max_samples
+        )
         self._overloads = self._timeouts = 0
         self._in_flight = 0
         self._latency: float | None = None
@@ -237,7 +257,6 @@ class RemoteConcurrencyController:
         ):
             raise ValueError("remote_queue_wait_seconds must be finite and non-negative")
         self._successes += 1
-        self._window_successes += 1
         self._latency = (
             latency_seconds
             if self._latency is None
@@ -246,7 +265,6 @@ class RemoteConcurrencyController:
         if self._baseline_latency is None:
             self._baseline_latency = latency_seconds
         if remote_queue_wait_seconds is not None:
-            self._window_queue_samples += 1
             self._queue_wait = (
                 remote_queue_wait_seconds
                 if self._queue_wait is None
@@ -255,18 +273,23 @@ class RemoteConcurrencyController:
             if self._baseline_queue_wait is None:
                 self._baseline_queue_wait = remote_queue_wait_seconds
         now = self._clock()
-        samples = self._window_successes + self._window_failures
+        self._record(now, True, latency_seconds, remote_queue_wait_seconds)
         if now < self._cooldown_until or now - self._window_started < self._window:
             return
-        if samples < self._minimum_samples:
+        samples = self._samples
+        if len(samples) < self._minimum_samples:
             return
-        healthy_latency = self._latency <= max(self._baseline_latency * 1.5, 0.001)
-        healthy_queue = self._window_queue_samples == 0 or (
-            self._queue_wait is not None
-            and self._baseline_queue_wait is not None
-            and self._queue_wait <= max(self._baseline_queue_wait * 1.5, 0.001)
+        successes = sum(1 for sample in samples if sample[1])
+        latencies = [sample[2] for sample in samples if sample[2] is not None]
+        waits = [sample[3] for sample in samples if sample[3] is not None]
+        latency = sum(latencies) / len(latencies)
+        queue_wait = sum(waits) / len(waits) if waits else None
+        healthy_latency = latency <= max(self._baseline_latency * 1.5, 0.001)
+        healthy_queue = queue_wait is None or (
+            self._baseline_queue_wait is not None
+            and queue_wait <= max(self._baseline_queue_wait * 1.5, 0.001)
         )
-        if self._window_successes / samples >= 0.9 and healthy_latency and healthy_queue:
+        if successes / len(samples) >= 0.9 and healthy_latency and healthy_queue:
             self._set_limit(
                 min(
                     self._maximum,
@@ -275,15 +298,21 @@ class RemoteConcurrencyController:
                 ),
                 "Increased additively after a healthy feedback window.",
             )
-            self._baseline_latency = 0.9 * self._baseline_latency + 0.1 * self._latency
-            if self._window_queue_samples and self._queue_wait is not None:
-                assert self._baseline_queue_wait is not None
-                self._baseline_queue_wait = 0.9 * self._baseline_queue_wait + 0.1 * self._queue_wait
+            self._baseline_latency = 0.9 * self._baseline_latency + 0.1 * latency
+            if queue_wait is not None and self._baseline_queue_wait is not None:
+                self._baseline_queue_wait = 0.9 * self._baseline_queue_wait + 0.1 * queue_wait
         else:
             self._reason = "Holding: recent failures, elevated latency or remote queue wait."
         self._window_started = now
-        self._window_successes = self._window_failures = 0
-        self._window_queue_samples = 0
+        samples.clear()
+
+    def _record(
+        self, now: float, success: bool, latency: float | None, queue_wait: float | None
+    ) -> None:
+        samples = self._samples
+        while samples and now - samples[0][0] > self._max_age:
+            samples.popleft()
+        samples.append((now, success, latency, queue_wait))
 
     def report_overload(
         self,
@@ -307,7 +336,6 @@ class RemoteConcurrencyController:
         self._overloads += 1
         if reason == "timeout":
             self._timeouts += 1
-        self._window_failures += 1
         if now >= self._cooldown_until:
             self._set_limit(
                 max(self._minimum, int(self._limiter.total_tokens) // 2),
@@ -315,8 +343,9 @@ class RemoteConcurrencyController:
             )
         self._cooldown_until = max(self._cooldown_until, now + max(self._cooldown, delay))
         self._window_started = now
-        self._window_successes = 0
-        self._window_queue_samples = 0
+        # Evidence gathered at the old limit no longer describes the new one.
+        self._samples.clear()
+        self._record(now, False, None, None)
 
     def report_failure(
         self, *, kind: Literal["authentication", "invalid_request", "application_error"]
@@ -328,7 +357,7 @@ class RemoteConcurrencyController:
         if kind not in ("authentication", "invalid_request", "application_error"):
             raise ValueError("invalid non-overload failure kind")
         self._failures += 1
-        self._window_failures += 1
+        self._record(self._clock(), False, None, None)
         self._reason = f"Holding after {kind}; it is not classified as congestion."
 
     def report_capacity(self, capacity: int | None) -> None:

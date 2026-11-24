@@ -35,7 +35,9 @@ Adaptive concurrency controllers re-evaluate capacity every
 `admission_wait_timeout_seconds` defaults to 5 seconds and
 `concurrency_wait_timeout_seconds` defaults to `None` (no permit deadline).
 Either can be configured as `None` for indefinite waits. Queue sizes are still
-bounded. See [Admission](../guide/admission.md) for per-call overrides.
+bounded. `admission_max_bypass` (default 8) limits how often a queued request can
+be overtaken by later, higher-priority requests. See
+[Admission](../guide/admission.md) for per-call overrides and fairness.
 
 See the [API reference](../api/index.md) and
 [coordination guide](../guide/coordination.md).

@@ -25,13 +25,30 @@ contention. With waiting enabled, omitting `wait_timeout_seconds` uses
 `None` explicitly waits indefinitely, subject to cancellation or manager shutdown.
 Positive finite values specify a deadline; zero and negative values are invalid.
 The admission queue remains bounded by `ResourceConfig.max_waiters`, including
-for indefinite waits. Within one manager, larger priority values go first and
-equal priorities are FIFO; a stream of higher-priority requests can starve
-lower-priority work. Only the request at the head of the queue is evaluated, so a
-large queued request also holds back smaller requests behind it until it fits,
-times out or is cancelled; non-waiting requests are rejected while any request
-is queued. Cancelled and timed-out waiters leave the queue immediately. There is
-no priority aging and no cross-process priority or fairness guarantee.
+for indefinite waits.
+
+### Fairness
+
+Within one manager the queue uses **bounded bypass**:
+
+- Equal priorities are served in arrival order (FIFO).
+- A later request with a larger priority value may move ahead of an earlier,
+  lower-priority waiter, but each waiter can be overtaken at most
+  `ResourceConfig.admission_max_bypass` times (default 8). After that it is
+  pinned: every later arrival queues behind it, whatever its priority.
+- `admission_max_bypass=0` gives plain arrival order.
+
+A waiter is therefore admitted after at most the requests already ahead of it
+plus `admission_max_bypass` overtakers, provided capacity is eventually released.
+There is no time-based priority aging.
+
+Only the request at the head of the queue is evaluated. A large queued request
+holds back smaller requests behind it until it fits, times out or is cancelled.
+This head-of-line blocking is deliberate: letting smaller requests fit around it
+would starve large requests. Non-waiting requests are rejected while any request
+is queued. Cancelled and timed-out waiters leave the queue immediately, and
+admission never exceeds capacity or `max_concurrency`. There is no cross-process
+priority or fairness guarantee.
 
 Explicit `None` previously selected the configured timeout; it now means
 indefinite waiting. Omit the argument to retain the former behavior.

@@ -402,6 +402,8 @@ async def test_feedback_racing_shutdown_is_rejected_without_corrupting_state() -
             ):
                 with pytest.raises(ManagerStateError):
                     call()
+            with pytest.raises(RuntimeError):
+                await anyio.to_thread.run_sync(lambda: controller.report_capacity(1))
             assert controller.state.in_flight == 1
         state = controller.state
         assert (state.in_flight, state.success_count, state.overload_count) == (0, 1, 0)
@@ -414,17 +416,21 @@ async def test_feedback_racing_shutdown_is_rejected_without_corrupting_state() -
 
 
 @pytest.mark.anyio
-async def test_low_volume_feedback_needs_minimum_samples_not_a_full_window() -> None:
+async def test_low_volume_feedback_needs_minimum_fresh_samples_not_a_full_window() -> None:
     async with RemoteConcurrencyController(
-        "quiet", initial_concurrency=1, max_concurrency=4, minimum_samples=4
+        "quiet",
+        initial_concurrency=1,
+        max_concurrency=4,
+        minimum_samples=4,
+        sample_max_age_seconds=60,
     ) as controller:
         now = fake_clock(controller)
         for _ in range(3):
-            now[0] += 600
+            now[0] += 15
             controller.report_success(latency_seconds=0.1)
         assert controller.state.current_limit == 1
         assert controller.state.history == ()
-        now[0] += 600
+        now[0] += 15
         controller.report_success(latency_seconds=0.1)
         assert controller.state.current_limit == 2
 
@@ -434,6 +440,83 @@ async def test_low_volume_feedback_needs_minimum_samples_not_a_full_window() -> 
         state = idle.state
         assert (state.current_limit, state.history) == (3, ())
         assert "awaiting remote feedback" in state.adjustment_reason
+
+
+@pytest.mark.anyio
+async def test_stale_samples_expire_and_lose_influence() -> None:
+    async with RemoteConcurrencyController(
+        "sparse", initial_concurrency=1, minimum_samples=4, sample_max_age_seconds=60
+    ) as controller:
+        now = fake_clock(controller)
+        # Outcomes spaced beyond the maximum age never accumulate into evidence.
+        for _ in range(10):
+            now[0] += 600
+            controller.report_success(latency_seconds=0.1)
+        assert controller.state.current_limit == 1
+        assert len(controller._samples) == 1
+
+    async with RemoteConcurrencyController(
+        "recovered", initial_concurrency=2, minimum_samples=4, sample_max_age_seconds=60
+    ) as controller:
+        now = fake_clock(controller)
+        controller.report_success(latency_seconds=0.1)
+        for _ in range(3):
+            controller.report_failure(kind="application_error")
+        # Old failures would hold the limit; once they expire, fresh successes decide.
+        now[0] = 120
+        for _ in range(4):
+            controller.report_success(latency_seconds=0.1)
+        assert controller.state.current_limit == 3
+
+    async with RemoteConcurrencyController(
+        "slow-then-fast", initial_concurrency=2, minimum_samples=4, sample_max_age_seconds=60
+    ) as controller:
+        now = fake_clock(controller)
+        controller.report_success(latency_seconds=0.1)
+        now[0] = 1
+        for _ in range(3):
+            controller.report_success(latency_seconds=5.0)
+        # Recent slow outcomes count, so the window holds.
+        assert controller.state.current_limit == 2
+        assert "Holding" in controller.state.adjustment_reason
+        now[0] = 2
+        for _ in range(4):
+            controller.report_success(latency_seconds=0.1)
+        # The healthy window is judged on its own latency, not on a smoothed history.
+        assert controller.state.current_limit == 3
+
+
+@pytest.mark.anyio
+async def test_observation_window_memory_is_bounded() -> None:
+    async with RemoteConcurrencyController(
+        "flood", initial_concurrency=2, max_samples=16, cooldown_seconds=1
+    ) as controller:
+        now = fake_clock(controller)
+        controller.report_overload(status_code=429)
+        for _ in range(10_000):
+            controller.report_success(latency_seconds=0.01)
+            controller.report_failure(kind="invalid_request")
+        assert len(controller._samples) == 16
+        assert controller.state.current_limit == 1
+        now[0] = 1
+        controller.report_success(latency_seconds=0.01)
+        # Eight failures among the sixteen most recent outcomes hold the limit.
+        assert controller.state.current_limit == 1
+        assert len(controller._samples) == 0
+
+
+def test_observation_window_parameters_are_validated() -> None:
+    with pytest.raises(ValueError, match="max_samples"):
+        RemoteConcurrencyController("x", minimum_samples=8, max_samples=4)
+    with pytest.raises(ValueError, match="max_samples"):
+        RemoteConcurrencyController("x", max_samples=5000)
+    with pytest.raises(TypeError, match="max_samples"):
+        RemoteConcurrencyController("x", max_samples=True)
+    with pytest.raises(ValueError, match="sample_max_age_seconds"):
+        RemoteConcurrencyController("x", observation_window_seconds=10, sample_max_age_seconds=5)
+    with pytest.raises(ValueError, match="sample_max_age_seconds"):
+        RemoteConcurrencyController("x", sample_max_age_seconds=math.inf)
+    assert RemoteConcurrencyController("x", observation_window_seconds=20)._max_age == 80
 
 
 @pytest.mark.anyio

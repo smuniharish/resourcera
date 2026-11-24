@@ -47,27 +47,34 @@ FIFO order.
 
 ## Adaptation window and low traffic
 
-The limit increases by at most one per observation window, and only when all of
-these hold:
+The controller keeps a bounded window of recent outcomes: at most `max_samples`
+(default 256), each discarded once older than `sample_max_age_seconds` (default:
+the larger of 30 seconds and four observation windows). Ages use the monotonic
+clock. The limit increases by at most one per observation window, and only when
+all of these hold:
 
-- at least `observation_window_seconds` have passed since the window started;
-- at least `minimum_samples` outcomes (successes plus reported failures) were
-  recorded since then;
-- at least 90% of those outcomes were successes, and smoothed latency and any
-  reported remote queue wait have not risen materially; and
+- at least `observation_window_seconds` have passed since the last evaluation;
+- the window holds at least `minimum_samples` fresh outcomes (successes plus
+  reported failures);
+- at least 90% of those outcomes were successes, and the window's mean latency
+  and any reported remote queue wait have not risen materially above their
+  slowly updated baselines; and
 - no overload cooldown or Retry-After delay is active.
 
-Insufficient feedback is never treated as health: with fewer than
-`minimum_samples` outcomes the limit holds, however much time passes. Samples
-are not discarded when traffic is sparse, so a low-traffic endpoint accumulates
-evidence across a longer interval and can still adapt once enough outcomes have
-been reported. With no feedback at all, the limit stays where it is. A burst of
-thousands of successes within one window still produces only one increase.
+After each evaluation the window is cleared, so the next step needs new evidence.
+
+Insufficient or stale feedback is never treated as health. With fewer than
+`minimum_samples` fresh outcomes the limit holds, however much time passes.
+An endpoint whose traffic is sparser than `minimum_samples` per
+`sample_max_age_seconds` therefore stays at its current limit. Raise the maximum
+age, or lower `minimum_samples` (2 at least), if such endpoints should adapt.
+With no feedback at all, the limit stays where it is. A burst of thousands of
+successes within one window still produces only one increase and keeps only the
+newest `max_samples` outcomes in memory.
 
 Decreases are immediate. Overload halves the limit (never below
-`min_concurrency`) once per cooldown and restarts the window. Failures recorded
-since the last evaluation, including the overload itself, carry into the new
-window, so recovery requires a fresh run of successes.
+`min_concurrency`) once per cooldown and restarts the window with the overload
+as its only outcome, so recovery requires a fresh run of successes.
 `report_capacity()` lowers the limit at once while requests are in flight; they
 keep running and new requests wait until in-flight work drains below the new
 limit.
@@ -95,9 +102,13 @@ changing state. From a worker thread, marshal feedback onto the owning loop:
 anyio.from_thread.run_sync(lambda: remote.report_success(latency_seconds=elapsed))
 ```
 
-Read `remote.state` from the owning loop as well. Feedback after the controller
-or its manager closes raises `ManagerStateError` and is discarded; requests that
-are already in flight finish normally and release their permits.
+Read `remote.state` from the owning loop as well. After the controller or its
+manager closes, every feedback method (`report_success`, `report_overload`,
+`report_failure`, `report_capacity`) and `slot()` raises `ManagerStateError`
+without changing counters or the limit; `remote.state.closed` is `True`. The
+thread check runs first, so a call from a foreign thread raises `RuntimeError`
+even after closure. Requests that are already in flight finish normally and
+release their permits.
 
 `manager.remote_concurrency()` creates a new, independent controller on every
 call. Create one controller per endpoint, or per capacity domain such as a

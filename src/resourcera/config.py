@@ -33,6 +33,7 @@ class ResourceConfig(BaseModel):
     max_provider_concurrency: int = Field(default=1, ge=1)
     max_concurrency: int = Field(default=64, ge=1)
     max_waiters: int = Field(default=128, ge=1)
+    admission_max_bypass: int = Field(default=8, ge=0)
     admission_wait_timeout_seconds: float | None = Field(default=5.0, gt=0)
     concurrency_wait_timeout_seconds: float | None = Field(default=None, gt=0)
     concurrency_adjustment_interval_seconds: float = Field(default=2.0, gt=0)

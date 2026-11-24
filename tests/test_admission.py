@@ -217,6 +217,108 @@ async def test_waiters_are_bounded_and_prioritized(snapshot: ResourceSnapshot) -
         await manager.close()
 
 
+def test_bounded_bypass_orders_waiters_fifo_within_priority(snapshot: ResourceSnapshot) -> None:
+    from resourcera.admission import AdmissionCoordinator, _Waiter
+
+    def order(max_bypass: int, priorities: list[int]) -> list[int]:
+        coordinator = AdmissionCoordinator(
+            ResourceConfig(admission_max_bypass=max_bypass),
+            lambda: snapshot,
+            lambda _seconds: None,
+            lambda: True,
+        )
+        for sequence, priority in enumerate(priorities):
+            coordinator._enqueue(_Waiter(priority, sequence, 0.0))
+        return [waiter.sequence for waiter in coordinator._waiters]
+
+    # Equal priorities stay FIFO; higher priorities overtake within the bypass budget.
+    assert order(8, [0, 0, 0]) == [0, 1, 2]
+    assert order(8, [0, 5, 5, 9]) == [3, 1, 2, 0]
+    # Once the low-priority waiter has been overtaken twice it is pinned.
+    assert order(2, [0, 5, 5, 5, 5]) == [1, 2, 0, 3, 4]
+    # Nothing overtakes a pinned waiter, even to reach lower priorities ahead of it.
+    assert order(1, [0, 1, 9, 9]) == [1, 0, 2, 3]
+    # Zero disables overtaking: plain arrival order.
+    assert order(0, [0, 9, 5]) == [0, 1, 2]
+
+
+@pytest.mark.anyio
+async def test_low_priority_waiter_is_not_starved_by_later_high_priority_traffic(
+    snapshot: ResourceSnapshot,
+) -> None:
+    manager = await start_manager(
+        snapshot, settings(max_concurrency=1, max_waiters=8, admission_max_bypass=2)
+    )
+    admitted: list[str] = []
+    active = 0
+    peak = 0
+    try:
+        held = await manager.reserve({"memory": "1GB"})
+
+        async def waiter(name: str, priority: int) -> None:
+            nonlocal active, peak
+            lease = await manager.reserve(
+                {"memory": "1GB", "priority": priority}, wait=True, wait_timeout_seconds=None
+            )
+            active += 1
+            peak = max(peak, active)
+            admitted.append(name)
+            await anyio.lowlevel.checkpoint()
+            active -= 1
+            await manager.release(lease)
+
+        async def queued(depth: int) -> None:
+            with anyio.fail_after(5):
+                while (await manager.admission_state()).queue_depth != depth:
+                    await anyio.lowlevel.checkpoint()
+
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(waiter, "low", 0)
+            await queued(1)
+            for index in range(4):
+                tasks.start_soon(waiter, f"high-{index}", 10)
+                await queued(2 + index)
+            state = await manager.admission_state()
+            assert state.priority_distribution == ((10, 4), (0, 1))
+            await manager.release(held)
+        assert admitted == ["high-0", "high-1", "low", "high-2", "high-3"]
+        assert peak == 1
+        state = await manager.admission_state()
+        assert (state.queue_depth, state.active_reservations) == (0, 0)
+    finally:
+        await manager.close()
+
+
+@pytest.mark.anyio
+async def test_shutdown_with_mixed_priorities_rejects_every_waiter(
+    snapshot: ResourceSnapshot,
+) -> None:
+    manager = await start_manager(
+        snapshot, settings(max_concurrency=1, max_waiters=4, admission_max_bypass=1)
+    )
+    await manager.reserve({"memory": "1GB"})
+    outcomes: list[type[BaseException]] = []
+
+    async def waiter(priority: int) -> None:
+        try:
+            await manager.reserve(
+                {"memory": "1GB", "priority": priority}, wait=True, wait_timeout_seconds=None
+            )
+        except ManagerStateError as error:
+            outcomes.append(type(error))
+
+    async with anyio.create_task_group() as tasks:
+        for priority in (0, 9, 3, 9):
+            tasks.start_soon(waiter, priority)
+        with anyio.fail_after(5):
+            while (await manager.admission_state()).queue_depth != 4:
+                await anyio.lowlevel.checkpoint()
+        with pytest.raises(AdmissionRejectedError, match="queue is full"):
+            await manager.reserve({"memory": "1GB", "priority": 99}, wait=True)
+        await manager.close()
+    assert outcomes == [ManagerStateError] * 4
+
+
 @pytest.mark.anyio
 async def test_wait_timeout_and_external_cancellation_cleanup(snapshot: ResourceSnapshot) -> None:
     manager = await start_manager(snapshot, settings(max_concurrency=1))

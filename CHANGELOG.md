@@ -30,6 +30,17 @@
   failure classification, controller reuse, local and remote admission
   composition, shutdown semantics, admission fairness, and thread cancellation;
   add the `local_remote_composition.py` example.
+- Judge remote adaptation on a bounded window of fresh outcomes: at most
+  `max_samples` (default 256) no older than `sample_max_age_seconds` (default the
+  larger of 30 seconds and four observation windows), using the window's own mean
+  latency. Previously, arbitrarily old outcomes and smoothed latency history
+  counted as current evidence; sparse endpoints now hold instead of adapting on
+  stale feedback.
+- Prevent low-priority admission starvation with bounded bypass: equal priorities
+  stay FIFO, and a waiter can be overtaken by later higher-priority requests at
+  most `ResourceConfig.admission_max_bypass` times (default 8; 0 gives arrival
+  order). Previously, strict priority ordering could starve lower priorities
+  indefinitely.
 
 ## Unreleased (0.2.1)
 
