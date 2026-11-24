@@ -64,6 +64,54 @@ timeouts and cancellations. Its completed-wait count and total wait duration
 include completed, timed-out and cancelled queued requests. It is not a
 cross-process view of SQLite reservations.
 
+### Waiter liveness heartbeats
+
+While a request is queued, its own waiting task records a liveness heartbeat
+every `ResourceConfig.admission_heartbeat_interval_seconds` (2 seconds by
+default, 0.05–3600; `None` disables heartbeats). Heartbeats exist so that long
+and indefinite waits stay observable, for example by an application watchdog:
+
+- A heartbeat means only "this request is still queued and its task is running".
+  It never admits the request, never implies that resources are available, and
+  never touches the queue order, priorities, permits or reservations.
+- Heartbeats never change a deadline. A finite wait expires at the deadline
+  computed once, with a monotonic clock, when it was enqueued. An indefinite wait
+  (`wait_timeout_seconds=None`) has no deadline and heartbeats never give it one.
+- Heartbeats stop as soon as the request is admitted, cancelled, times out, is
+  rejected or is ended by manager shutdown. Finished waiters are not retained.
+
+`admission_state()` exposes, for this manager only:
+
+| Field | Meaning |
+| --- | --- |
+| `indefinite_waiter_count`, `finite_waiter_count` | Queued waits without and with a deadline. |
+| `admitted_waiter_count`, `shutdown_waiter_count` | Cumulative queued requests that were admitted or ended by shutdown. |
+| `heartbeat_interval_seconds` | Configured interval, or `None` when disabled. |
+| `heartbeat_count`, `last_heartbeat_at` | Cumulative heartbeats; UTC time of the latest one. |
+| `missed_heartbeat_count`, `max_heartbeat_delay_seconds` | Whole intervals skipped by late heartbeats, and the largest lateness in seconds. |
+| `heartbeat_overdue_waiter_count` | Queued waiters whose last heartbeat (or enqueue time) is older than two intervals. |
+| `waiters` | One `AdmissionWaiterState` per queued request: sequence, lease ID, priority, position, status, wait duration, timeout, remaining time and heartbeat statistics. |
+
+Durations are monotonic seconds; `remaining_seconds` and `timeout_seconds` are
+`None` for indefinite waits. Heartbeat fields stay zero or `None` when heartbeats
+are disabled or have not occurred; values are never fabricated.
+
+A late heartbeat is reported, not punished. When the event loop is blocked or
+congested, the next heartbeat is coalesced into one, the skipped intervals are
+counted in `missed_heartbeat_count`, and the waiter's `status` is
+`"heartbeat_overdue"` until it runs again. An overdue waiter is still verified to
+be in the queue: RESOURCERA never removes, admits or expires a waiter because a
+heartbeat was late. Watchdogs should treat it as a symptom of loop congestion,
+not as a dead request.
+
+Heartbeats are cheap: they reuse each waiter's existing task (no extra tasks,
+threads or registries), take no lock, never sample resources and only update a
+few counters, so per-waiter state is constant-size and the `waiters` view is
+bounded by `max_waiters`. The cost is one extra timer wake-up per waiter per
+interval; raise the interval or set it to `None` for very large queues. These
+heartbeats are process-local, like the queue itself: they say nothing about
+waiters in other processes sharing a reservation store.
+
 Instrumentation such as coverage or profiling can increase measured library
 CPU cost and cause the strict overhead policy to suspend admission. Check the
 rejection reason and overhead state when this happens; a finite admission wait
@@ -96,8 +144,8 @@ does cancel its admission context and surfaces `ReservationError`.
 
 `await manager.close()` is idempotent and safe to call concurrently; later calls
 wait for the first to finish. Once closing begins, new admission and reservation
-calls raise `ManagerStateError`, queued waiters are woken with
-`ManagerStateError`, and a lease whose transaction completes during shutdown is
+calls raise `ManagerStateError`, queued waiters are woken with `ManagerStateError` (ending
+their heartbeats), and a lease whose transaction completes during shutdown is
 released instead of being returned. Active admission contexts are cancelled and
 their leases released; the manager's background tasks are stopped before
 `close()` returns.

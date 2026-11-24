@@ -141,7 +141,10 @@ limit below the active count sooner.
   (`concurrency_wait_timeout_seconds=None`) and five seconds for admission.
   Passing `None` explicitly waits indefinitely at that stage; positive finite
   values set a deadline. Zero, negative and non-finite values are invalid.
-  Both queues remain bounded even when waits are indefinite.
+  Both queues remain bounded even when waits are indefinite. The lease wait
+  happens in the manager's admission queue, so it appears in
+  `manager.admission_state()` with liveness heartbeats; permit waits have none.
+  See [Waiter liveness heartbeats](admission.md#waiter-liveness-heartbeats).
 - Cancelling a waiter leaves no permit or lease behind.
 - Leaving the `adaptive_concurrency` block closes the controller. Pending waiters
   at either stage receive `ManagerStateError`, and running slots finish normally.

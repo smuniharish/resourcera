@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import (
     BaseModel,
@@ -371,8 +372,39 @@ class AdmissionDecision(FrozenModel):
     lease_id: str | None = None
 
 
+class AdmissionWaiterState(FrozenModel):
+    """One request currently queued for admission; terminal waiters are not retained.
+
+    Durations are monotonic seconds. ``status`` is ``"heartbeat_overdue"`` when the
+    waiter's last heartbeat (or its enqueue time, before the first heartbeat) is older
+    than two heartbeat intervals. The request is still queued and waiting: an overdue
+    heartbeat indicates a delayed or congested event loop, not a failed waiter, and never
+    removes, admits or times out the request. Heartbeat fields are zero or ``None`` when
+    heartbeats are disabled or have not happened yet.
+    """
+
+    sequence: int = Field(ge=1)
+    lease_id: str
+    priority: int
+    position: int = Field(ge=0)
+    status: Literal["waiting", "heartbeat_overdue"]
+    wait_seconds: float = Field(ge=0)
+    timeout_seconds: float | None = Field(default=None, gt=0)
+    remaining_seconds: float | None = Field(default=None, ge=0)
+    heartbeat_count: int = Field(ge=0)
+    last_heartbeat_age_seconds: float | None = Field(default=None, ge=0)
+    missed_heartbeat_count: int = Field(ge=0)
+    max_heartbeat_delay_seconds: float | None = Field(default=None, ge=0)
+
+
 class AdmissionState(FrozenModel):
-    """Local admission queue and owned reservation counters."""
+    """Local admission queue, waiter liveness and owned reservation counters.
+
+    Waiter heartbeats report liveness only: they never imply that resources are
+    available and never extend a deadline. ``timeout_seconds``/``remaining_seconds`` of
+    ``None`` mean an indefinite wait. Counters are cumulative for this manager;
+    ``last_heartbeat_at`` is UTC wall-clock time derived from the monotonic clock.
+    """
 
     queue_capacity: int = Field(ge=1)
     queue_depth: int = Field(ge=0)
@@ -385,6 +417,17 @@ class AdmissionState(FrozenModel):
     cancelled_waiter_count: int = Field(ge=0)
     completed_wait_count: int = Field(ge=0)
     total_wait_seconds: float = Field(ge=0)
+    admitted_waiter_count: int = Field(default=0, ge=0)
+    shutdown_waiter_count: int = Field(default=0, ge=0)
+    indefinite_waiter_count: int = Field(default=0, ge=0)
+    finite_waiter_count: int = Field(default=0, ge=0)
+    heartbeat_interval_seconds: float | None = Field(default=None, gt=0)
+    heartbeat_count: int = Field(default=0, ge=0)
+    missed_heartbeat_count: int = Field(default=0, ge=0)
+    max_heartbeat_delay_seconds: float | None = Field(default=None, ge=0)
+    last_heartbeat_at: datetime | None = None
+    heartbeat_overdue_waiter_count: int = Field(default=0, ge=0)
+    waiters: tuple[AdmissionWaiterState, ...] = ()
 
 
 class ResourceLease(FrozenModel):

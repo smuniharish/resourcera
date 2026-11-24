@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         AcceleratorDevice,
         AdmissionDecision,
         AdmissionState,
+        AdmissionWaiterState,
         CapacityResult,
         ConcurrencyAdjustment,
         ConcurrencyRecommendation,
@@ -49,6 +50,7 @@ _EXPORTS = {
     "AcceleratorDevice": "models",
     "AdmissionDecision": "models",
     "AdmissionState": "models",
+    "AdmissionWaiterState": "models",
     "AdmissionRejectedError": "exceptions",
     "CapacityResult": "models",
     "ConcurrencyAdjustment": "models",
@@ -87,6 +89,7 @@ __all__ = [
     "AdmissionDecision",
     "AdmissionRejectedError",
     "AdmissionState",
+    "AdmissionWaiterState",
     "CapacityResult",
     "ConcurrencyAdjustment",
     "ConcurrencyController",
@@ -129,7 +132,7 @@ def __getattr__(name: str) -> object:
         try:
             value = version("resourcera")
         except PackageNotFoundError:
-            value = "0.3.0"
+            value = "0.4.0"
     elif name in _EXPORTS:
         value = getattr(import_module(f"resourcera.{_EXPORTS[name]}"), name)
     else:

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (0.3.0)
+## Unreleased (0.4.0)
 
 - Refresh runtime, optional, development, documentation, build, and transitive
   dependencies to current compatible stable releases.
@@ -11,6 +11,14 @@
   wake waiters at either stage when their controller or manager closes.
 - Expose manager-local admission queue state and distinguish controller permit
   waiters from operations awaiting a lease.
+- Record periodic liveness heartbeats for queued admission requests
+  (`ResourceConfig.admission_heartbeat_interval_seconds`, default 2 seconds;
+  `None` disables). `AdmissionState` gains finite/indefinite waiter counts,
+  admitted/shutdown outcome counts, heartbeat counters, missed-interval and delay
+  reporting, an overdue-waiter count and a bounded per-waiter `waiters` view
+  (`AdmissionWaiterState`). Heartbeats are liveness only: they never admit, never
+  reset or create a deadline, and a late heartbeat never removes or expires a
+  waiter. All new fields have defaults, so existing constructions stay valid.
 - Add separate process-local remote concurrency controllers with feedback,
   cooldown, Retry-After, remote queue-wait observations and application-reported
   capacity ceilings.

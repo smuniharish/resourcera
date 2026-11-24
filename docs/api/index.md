@@ -24,6 +24,7 @@ models, provider contracts, and exceptions.
 ::: resourcera.models.AdmissionDecision
 
 ::: resourcera.models.AdmissionState
+::: resourcera.models.AdmissionWaiterState
 
 ::: resourcera.models.ResourceLease
 

@@ -1,13 +1,23 @@
+import asyncio
 import sqlite3
 import threading
 import time
+from collections.abc import Callable
+from functools import partial
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import patch
 
 import anyio
 import anyio.lowlevel
 import pytest
+from hypothesis import given
+from hypothesis import settings as settings_hypothesis
+from hypothesis import strategies as st
 
 from resourcera import (
     AdmissionRejectedError,
+    AdmissionState,
     ManagerStateError,
     ReservationError,
     ResourceConfig,
@@ -15,6 +25,7 @@ from resourcera import (
     ResourceManager,
     WorkloadRequirements,
 )
+from resourcera.admission import AdmissionCoordinator, _Waiter
 from resourcera.coordination import ReservationStore
 from resourcera.metrics import SampleClock, metric
 from resourcera.models import LimitState, ResourceSnapshot, Scope
@@ -830,3 +841,528 @@ def test_store_requires_a_real_absolute_database_path() -> None:
     with pytest.raises(ValueError, match="absolute local file"):
         ResourceConfig(coordination_database="relative.sqlite")
     assert ReservationStore(settings()).scope is Scope.PROCESS
+
+
+async def _state(manager: ResourceManager) -> AdmissionState:
+    return await manager.admission_state()
+
+
+async def _until(
+    manager: ResourceManager, predicate: Callable[[AdmissionState], bool], seconds: float = 10
+) -> AdmissionState:
+    """Poll local admission state until ``predicate`` holds; never a fixed sleep window."""
+    with anyio.fail_after(seconds):
+        while True:
+            state = await manager.admission_state()
+            if predicate(state):
+                return state
+            await anyio.sleep(0.01)
+
+
+async def _coordinator(manager: ResourceManager) -> AdmissionCoordinator:
+    async def get(runtime: Any) -> AdmissionCoordinator:
+        return runtime.coordinator()
+
+    return await manager._call_runtime(get)
+
+
+def _beats(state: AdmissionState) -> int:
+    return state.waiters[0].heartbeat_count if state.waiters else -1
+
+
+@pytest.mark.anyio
+async def test_indefinite_waiter_heartbeats_without_admission_until_resources_free(
+    snapshot: ResourceSnapshot,
+) -> None:
+    manager = await start_manager(
+        snapshot,
+        settings(
+            max_concurrency=1,
+            admission_wait_timeout_seconds=0.05,
+            admission_heartbeat_interval_seconds=0.05,
+        ),
+    )
+    admitted = anyio.Event()
+    try:
+        held = await manager.reserve({"memory": "1GB"})
+
+        async def waiter() -> None:
+            async with manager.admission({"memory": "1GB"}, wait=True, wait_timeout_seconds=None):
+                admitted.set()
+
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(waiter)
+            # Many intervals and far beyond the 0.05 s configured admission timeout.
+            state = await _until(manager, lambda state: _beats(state) >= 5)
+            assert not admitted.is_set()
+            (view,) = state.waiters
+            assert view.timeout_seconds is None and view.remaining_seconds is None
+            assert view.lease_id and view.sequence >= 1 and view.position == 0
+            assert (state.indefinite_waiter_count, state.finite_waiter_count) == (1, 0)
+            assert state.heartbeat_interval_seconds == 0.05
+            assert state.heartbeat_count >= 5 and state.last_heartbeat_at is not None
+            # Heartbeats are liveness only: nothing was admitted or reserved.
+            assert (state.active_reservations, state.admitted_waiter_count) == (1, 0)
+            assert state.timeout_count == 0
+            await manager.release(held)
+            with anyio.fail_after(5):
+                await admitted.wait()
+        state = await _state(manager)
+        assert (state.queue_depth, state.admitted_waiter_count, state.active_reservations) == (
+            0,
+            1,
+            0,
+        )
+        assert state.waiters == ()
+        beats = state.heartbeat_count
+        await anyio.sleep(0.2)  # several intervals: a leftover heartbeat would show here
+        assert (await _state(manager)).heartbeat_count == beats
+    finally:
+        await manager.close()
+
+
+@pytest.mark.anyio
+async def test_heartbeats_never_extend_a_finite_deadline(snapshot: ResourceSnapshot) -> None:
+    manager = await start_manager(
+        snapshot, settings(max_concurrency=1, admission_heartbeat_interval_seconds=0.05)
+    )
+    remaining: list[float] = []
+    outcome: list[float] = []
+    try:
+        held = await manager.reserve({"memory": "1GB"})
+
+        async def waiter() -> None:
+            started = time.monotonic()
+            with pytest.raises(AdmissionRejectedError, match="timed out") as rejected:
+                await manager.reserve({"memory": "1GB"}, wait=True, wait_timeout_seconds=0.6)
+            assert rejected.value.timed_out
+            outcome.append(time.monotonic() - started)
+
+        # A heartbeat that reset the deadline would push it out forever; fail_after bounds it.
+        with anyio.fail_after(5):
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(waiter)
+                while not outcome:
+                    state = await _state(manager)
+                    for view in state.waiters:
+                        assert view.timeout_seconds == 0.6
+                        assert view.remaining_seconds is not None
+                        remaining.append(view.remaining_seconds)
+                    await anyio.sleep(0.01)
+        (elapsed,) = outcome
+        assert elapsed >= 0.6 - 0.02  # one coarse Windows clock tick
+        assert remaining == sorted(remaining, reverse=True)
+        state = await _state(manager)
+        assert state.heartbeat_count >= 3
+        assert (state.timeout_count, state.queue_depth, state.admitted_waiter_count) == (1, 0, 0)
+        await manager.release(held)
+        assert (await _state(manager)).active_reservations == 0
+    finally:
+        await manager.close()
+
+
+@pytest.mark.anyio
+async def test_omitted_and_none_timeouts_are_reported_and_cancellation_ends_heartbeats(
+    snapshot: ResourceSnapshot,
+) -> None:
+    manager = await start_manager(
+        snapshot,
+        settings(
+            max_concurrency=1,
+            admission_wait_timeout_seconds=30,
+            admission_heartbeat_interval_seconds=0.05,
+        ),
+    )
+    try:
+        held = await manager.reserve({"memory": "1GB"})
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(partial(manager.reserve, {"memory": "1GB"}, wait=True))
+            tasks.start_soon(
+                partial(manager.reserve, {"memory": "1GB"}, wait=True, wait_timeout_seconds=None)
+            )
+            state = await _until(
+                manager,
+                lambda state: (
+                    state.queue_depth == 2 and all(view.heartbeat_count for view in state.waiters)
+                ),
+            )
+            assert (state.indefinite_waiter_count, state.finite_waiter_count) == (1, 1)
+            timeouts = sorted(view.timeout_seconds or 0.0 for view in state.waiters)
+            assert timeouts == [0.0, 30.0]
+            tasks.cancel_scope.cancel()
+        state = await _state(manager)
+        assert (state.queue_depth, state.cancelled_waiter_count) == (0, 2)
+        assert (state.indefinite_waiter_count, state.finite_waiter_count) == (0, 0)
+        beats = state.heartbeat_count
+        await anyio.sleep(0.2)
+        assert (await _state(manager)).heartbeat_count == beats
+        await manager.release(held)
+    finally:
+        await manager.close()
+
+
+@pytest.mark.anyio
+async def test_manager_shutdown_ends_waiter_heartbeats(snapshot: ResourceSnapshot) -> None:
+    manager = await start_manager(
+        snapshot, settings(max_concurrency=1, admission_heartbeat_interval_seconds=0.05)
+    )
+    errors: list[BaseException] = []
+    try:
+        await manager.reserve({"memory": "1GB"})
+        coordinator = await _coordinator(manager)
+
+        async def waiter() -> None:
+            try:
+                await manager.reserve({"memory": "1GB"}, wait=True, wait_timeout_seconds=None)
+            except ManagerStateError as exc:
+                errors.append(exc)
+
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(waiter)
+            await _until(manager, lambda state: _beats(state) >= 2)
+            await manager.close()
+    finally:
+        await manager.close()
+    assert len(errors) == 1
+    state = coordinator._state_now()
+    assert (state.queue_depth, state.shutdown_waiter_count, state.admitted_waiter_count) == (
+        0,
+        1,
+        0,
+    )
+    beats = state.heartbeat_count
+    await anyio.sleep(0.2)
+    assert coordinator._state_now().heartbeat_count == beats
+
+
+@pytest.mark.anyio
+async def test_congested_event_loop_reports_late_heartbeats_without_expiring_waiters(
+    snapshot: ResourceSnapshot,
+) -> None:
+    manager = await start_manager(
+        snapshot, settings(max_concurrency=1, admission_heartbeat_interval_seconds=0.05)
+    )
+    admitted = anyio.Event()
+    try:
+        held = await manager.reserve({"memory": "1GB"})
+
+        async def waiter() -> None:
+            async with manager.admission({"memory": "1GB"}, wait=True, wait_timeout_seconds=None):
+                admitted.set()
+
+        async def stall(runtime: Any) -> AdmissionState:
+            time.sleep(0.5)  # noqa: ASYNC251 - deliberately congests the owning event loop
+            return runtime.coordinator()._state_now()
+
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(waiter)
+            await _until(manager, lambda state: _beats(state) >= 1)
+            stalled = await manager._call_runtime(stall)
+            (view,) = stalled.waiters
+            assert view.status == "heartbeat_overdue"
+            assert stalled.heartbeat_overdue_waiter_count == 1
+            # Overdue is reported, but the waiter is still queued, not removed or expired.
+            assert (stalled.queue_depth, stalled.timeout_count) == (1, 0)
+            state = await _until(manager, lambda state: state.missed_heartbeat_count >= 1)
+            (view,) = state.waiters
+            assert view.missed_heartbeat_count >= 1
+            assert view.max_heartbeat_delay_seconds is not None
+            assert view.max_heartbeat_delay_seconds >= 0.3
+            assert state.max_heartbeat_delay_seconds == view.max_heartbeat_delay_seconds
+            await _until(manager, lambda state: state.heartbeat_overdue_waiter_count == 0)
+            assert not admitted.is_set()
+            await manager.release(held)
+            with anyio.fail_after(5):
+                await admitted.wait()
+        state = await _state(manager)
+        assert (state.admitted_waiter_count, state.timeout_count, state.rejected_count) == (1, 0, 0)
+    finally:
+        await manager.close()
+
+
+@pytest.mark.anyio
+async def test_heartbeats_do_not_sample_and_managers_keep_isolated_state(
+    snapshot: ResourceSnapshot,
+) -> None:
+    config = settings(max_concurrency=1, admission_heartbeat_interval_seconds=0.05)
+    first = await start_manager(snapshot, config)
+    second = await start_manager(snapshot, config)
+    samples = 0
+    try:
+        held = await first.reserve({"memory": "1GB"})
+
+        async def count_samples(runtime: Any) -> None:
+            original = runtime._sample_blocking
+
+            def sample(sample_io: bool) -> Any:
+                nonlocal samples
+                samples += 1
+                return original(sample_io)
+
+            runtime._sample_blocking = sample
+
+        await first._call_runtime(count_samples)
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(
+                partial(first.reserve, {"memory": "1GB"}, wait=True, wait_timeout_seconds=None)
+            )
+            await _until(first, lambda state: _beats(state) >= 5)
+            assert samples == 0  # cpu_memory_interval_seconds=60: heartbeats never sample
+            other = await _state(second)
+            assert (other.heartbeat_count, other.queue_depth, other.last_heartbeat_at) == (
+                0,
+                0,
+                None,
+            )
+            # Read the owner's state from a worker thread through the supported marshaling.
+            from_thread = await anyio.to_thread.run_sync(
+                anyio.from_thread.run, first.admission_state
+            )
+            assert from_thread.queue_depth == 1
+            tasks.cancel_scope.cancel()
+        await first.release(held)
+    finally:
+        await first.close()
+        await second.close()
+
+
+@pytest.mark.anyio
+async def test_heartbeats_can_be_disabled_without_fabricated_values(
+    snapshot: ResourceSnapshot,
+) -> None:
+    manager = await start_manager(
+        snapshot, settings(max_concurrency=1, admission_heartbeat_interval_seconds=None)
+    )
+    try:
+        held = await manager.reserve({"memory": "1GB"})
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(
+                partial(manager.reserve, {"memory": "1GB"}, wait=True, wait_timeout_seconds=None)
+            )
+            await _until(manager, lambda state: state.queue_depth == 1)
+            await anyio.sleep(0.3)  # longer than the head poll: still nothing fabricated
+            state = await _state(manager)
+            (view,) = state.waiters
+            assert state.heartbeat_interval_seconds is None
+            assert (state.heartbeat_count, state.last_heartbeat_at) == (0, None)
+            assert (view.status, view.heartbeat_count, view.last_heartbeat_age_seconds) == (
+                "waiting",
+                0,
+                None,
+            )
+            tasks.cancel_scope.cancel()
+        await manager.release(held)
+    finally:
+        await manager.close()
+
+
+@pytest.mark.anyio
+async def test_many_indefinite_waiters_share_their_own_tasks_and_clean_up(
+    snapshot: ResourceSnapshot, anyio_backend: str
+) -> None:
+    count = 300
+    interval = 0.05
+    manager = await start_manager(
+        snapshot,
+        settings(
+            max_concurrency=1,
+            max_waiters=count,
+            admission_heartbeat_interval_seconds=interval,
+        ),
+    )
+    try:
+        held = await manager.reserve({"memory": "1GB"})
+        coordinator = await _coordinator(manager)
+        baseline = len(asyncio.all_tasks()) if anyio_backend == "asyncio" else 0
+        async with anyio.create_task_group() as tasks:
+            for _ in range(count):
+                tasks.start_soon(
+                    partial(
+                        manager.reserve, {"memory": "1MB"}, wait=True, wait_timeout_seconds=None
+                    )
+                )
+            started = time.monotonic()
+            state = await _until(
+                manager,
+                lambda state: (
+                    state.queue_depth == count
+                    and all(view.heartbeat_count >= 2 for view in state.waiters)
+                ),
+                seconds=30,
+            )
+            elapsed = time.monotonic() - started
+            if anyio_backend == "asyncio":
+                # Heartbeats run in each waiter's own task: no extra tasks per waiter.
+                assert len(asyncio.all_tasks()) == baseline + count
+            # Bounded: per-waiter views mirror the queue and keep no history.
+            assert len(state.waiters) == state.queue_depth == count
+            assert not hasattr(coordinator._waiters[0], "__dict__")
+            # At most one coalesced heartbeat per waiter per elapsed interval.
+            assert state.heartbeat_count <= count * (elapsed / interval + 2)
+            assert state.indefinite_waiter_count == count
+            tasks.cancel_scope.cancel()
+        state = await _state(manager)
+        assert (state.queue_depth, state.cancelled_waiter_count, state.waiters) == (0, count, ())
+        assert state.active_reservations == 1
+        beats = state.heartbeat_count
+        await anyio.sleep(0.2)
+        assert (await _state(manager)).heartbeat_count == beats
+        await manager.release(held)
+    finally:
+        await manager.close()
+
+
+@pytest.mark.anyio
+async def test_cancellation_racing_admission_of_a_heartbeating_waiter_does_not_leak(
+    snapshot: ResourceSnapshot,
+) -> None:
+    manager = await start_manager(
+        snapshot, settings(max_concurrency=1, admission_heartbeat_interval_seconds=0.05)
+    )
+    try:
+        for _ in range(10):
+            held = await manager.reserve({"memory": "1GB"})
+            delivered: list[ResourceLease] = []
+
+            async def waiter(delivered: list[ResourceLease] = delivered) -> None:
+                delivered.append(
+                    await manager.reserve({"memory": "1GB"}, wait=True, wait_timeout_seconds=None)
+                )
+
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(waiter)
+                await _until(manager, lambda state: _beats(state) >= 1)
+                await manager.release(held)
+                tasks.cancel_scope.cancel()
+            state = await _state(manager)
+            # The waiter left exactly once. Either the cancellation won, or the lease was
+            # delivered to the caller (and is still owned by it); never an orphaned lease.
+            assert state.queue_depth == 0
+            assert state.active_reservations == len(delivered)
+            for lease in delivered:
+                await manager.release(lease)
+        state = await _state(manager)
+        assert state.admitted_waiter_count + state.cancelled_waiter_count == 10
+        assert state.active_reservations == 0
+        lease = await manager.reserve({"memory": "1GB"})
+        await manager.release(lease)
+    finally:
+        await manager.close()
+
+
+@pytest.mark.anyio
+async def test_repeated_manager_cycles_with_heartbeating_waiters_leave_no_tasks_or_threads(
+    snapshot: ResourceSnapshot, anyio_backend: str
+) -> None:
+    def threads() -> set[threading.Thread]:
+        # AnyIO's cached worker threads belong to the running loop and are reused.
+        return {
+            thread
+            for thread in threading.enumerate()
+            if not thread.daemon and thread.name != "AnyIO worker thread"
+        }
+
+    before_threads = threads()
+    before_tasks = len(asyncio.all_tasks()) if anyio_backend == "asyncio" else 0
+    for _ in range(3):
+        manager = await start_manager(
+            snapshot, settings(max_concurrency=1, admission_heartbeat_interval_seconds=0.05)
+        )
+        try:
+            await manager.reserve({"memory": "1GB"})
+            async with anyio.create_task_group() as tasks:
+
+                async def waiter(manager: ResourceManager = manager) -> None:
+                    with pytest.raises(ManagerStateError):
+                        await manager.reserve(
+                            {"memory": "1GB"}, wait=True, wait_timeout_seconds=None
+                        )
+
+                tasks.start_soon(waiter)
+                await _until(manager, lambda state: _beats(state) >= 1)
+                await manager.close()
+        finally:
+            await manager.close()
+    if anyio_backend == "asyncio":
+        assert len(asyncio.all_tasks()) == before_tasks
+    with anyio.fail_after(5):
+        while threads() - before_threads:  # noqa: ASYNC110 - polls thread exit
+            await anyio.sleep(0.01)
+
+
+_OUTCOMES = st.sampled_from(["admitted", "cancelled", "timed_out", "shutdown", "rejected"])
+
+
+@settings_hypothesis(max_examples=200, deadline=None)
+@given(
+    interval=st.sampled_from([0.05, 1.0, None]),
+    steps=st.lists(
+        st.one_of(
+            st.tuples(st.just("advance"), st.floats(0, 5, allow_nan=False)),
+            st.tuples(st.just("beat"), st.integers(0, 3)),
+            st.tuples(st.just("leave"), st.integers(0, 3), _OUTCOMES),
+        ),
+        max_size=60,
+    ),
+)
+def test_heartbeat_and_leave_lifecycle_invariants(
+    interval: float | None, steps: list[tuple[Any, ...]]
+) -> None:
+    now = [1000.0]
+    coordinator: Any = SimpleNamespace(
+        config=SimpleNamespace(admission_heartbeat_interval_seconds=interval),
+        _heartbeat_count=0,
+        _missed_heartbeat_count=0,
+        _max_heartbeat_delay=None,
+        _last_heartbeat=None,
+        _admitted_waiter_count=0,
+        _shutdown_waiter_count=0,
+        _completed_wait_count=0,
+        _total_wait_seconds=0.0,
+        _notify=lambda: None,
+    )
+    coordinator._record_wait = partial(AdmissionCoordinator._record_wait, coordinator)
+    deadline = now[0] + 3
+    waiters = [
+        _Waiter(
+            0,
+            index + 1,
+            now[0],
+            timeout=None if index % 2 else 3.0,
+            deadline=None if index % 2 else deadline,
+            next_heartbeat=float("inf") if interval is None else now[0] + interval,
+        )
+        for index in range(4)
+    ]
+    coordinator._waiters = list(waiters)
+    first_outcome: dict[int, str] = {}
+    with patch("resourcera.admission.time", SimpleNamespace(monotonic=lambda: now[0])):
+        for step in steps:
+            if step[0] == "advance":
+                now[0] += step[1]
+            elif step[0] == "beat":
+                waiter = waiters[step[1]]
+                before = waiter.heartbeats
+                AdmissionCoordinator._heartbeat(coordinator, waiter)
+                if waiter.outcome != "waiting" or interval is None:
+                    assert waiter.heartbeats == before  # cannot revive or fabricate
+                if waiter.heartbeats > before:
+                    assert interval is not None
+                    assert waiter.last_heartbeat == now[0]
+                    assert waiter.next_heartbeat == now[0] + interval
+            else:
+                waiter = waiters[step[1]]
+                AdmissionCoordinator._leave(coordinator, waiter, step[2])
+                first_outcome.setdefault(step[1], step[2])
+            for index, waiter in enumerate(waiters):
+                # Heartbeats never touch deadlines, and an outcome is set exactly once.
+                assert waiter.deadline == (None if index % 2 else deadline)
+                assert waiter.outcome == first_outcome.get(index, "waiting")
+                assert (waiter in coordinator._waiters) == (waiter.outcome == "waiting")
+                assert waiter.missed_heartbeats >= 0
+    assert coordinator._heartbeat_count == sum(waiter.heartbeats for waiter in waiters)
+    assert coordinator._missed_heartbeat_count == sum(w.missed_heartbeats for w in waiters)
+    assert coordinator._completed_wait_count == len(first_outcome)
+    outcomes = list(first_outcome.values())
+    assert coordinator._admitted_waiter_count == outcomes.count("admitted")
+    assert coordinator._shutdown_waiter_count == outcomes.count("shutdown")

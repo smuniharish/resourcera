@@ -9,6 +9,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import anyio
@@ -19,6 +20,7 @@ from resourcera.exceptions import AdmissionRejectedError, ManagerStateError, Res
 from resourcera.models import (
     AdmissionDecision,
     AdmissionState,
+    AdmissionWaiterState,
     CapacityResult,
     ResourceLease,
     ResourceSnapshot,
@@ -38,12 +40,32 @@ class _Owned:
     on_loss: Callable[[], None] | None = None
 
 
+_HEAD_POLL_SECONDS = 0.25
+# Event-loop timers may fire up to one clock tick early (about 15.6 ms on Windows);
+# heartbeats tolerate that instead of spinning. Deadlines never use this tolerance.
+_CLOCK_TOLERANCE = time.get_clock_info("monotonic").resolution
+# A queued waiter whose last heartbeat is older than this many intervals is reported as
+# overdue. It is still queued and waiting; it is never removed or admitted because of it.
+_OVERDUE_INTERVALS = 2
+
+
 @dataclass(slots=True, eq=False)
 class _Waiter:
+    """One queued admission request; ``outcome`` leaves ``"waiting"`` exactly once."""
+
     priority: int
     sequence: int
     started: float
+    lease_id: str = ""
+    timeout: float | None = None
+    deadline: float | None = None
+    next_heartbeat: float = float("inf")
     bypassed: int = 0
+    outcome: str = "waiting"
+    heartbeats: int = 0
+    last_heartbeat: float | None = None
+    missed_heartbeats: int = 0
+    max_heartbeat_delay: float | None = None
 
 
 class AdmissionCoordinator:
@@ -76,6 +98,12 @@ class AdmissionCoordinator:
         self._cancelled_waiter_count = 0
         self._completed_wait_count = 0
         self._total_wait_seconds = 0.0
+        self._admitted_waiter_count = 0
+        self._shutdown_waiter_count = 0
+        self._heartbeat_count = 0
+        self._missed_heartbeat_count = 0
+        self._max_heartbeat_delay: float | None = None
+        self._last_heartbeat: float | None = None
 
     @property
     def retained_objects(self) -> tuple[object, ...]:
@@ -131,27 +159,139 @@ class AdmissionCoordinator:
     async def state(self) -> AdmissionState:
         """Snapshot this manager's queue and owned leases without sampling resources."""
         async with self._lock:
-            now = time.monotonic()
-            priorities: dict[int, int] = {}
-            for waiter in self._waiters:
-                priorities[waiter.priority] = priorities.get(waiter.priority, 0) + 1
-            return AdmissionState(
-                queue_capacity=self.config.max_waiters,
-                queue_depth=len(self._waiters),
-                available_queue_slots=self.config.max_waiters - len(self._waiters),
-                oldest_wait_seconds=(
-                    max(0.0, now - min(waiter.started for waiter in self._waiters))
-                    if self._waiters
-                    else None
-                ),
-                priority_distribution=tuple(sorted(priorities.items(), reverse=True)),
-                active_reservations=len(self._owned),
-                rejected_count=self._rejected_count,
-                timeout_count=self._timeout_count,
-                cancelled_waiter_count=self._cancelled_waiter_count,
-                completed_wait_count=self._completed_wait_count,
-                total_wait_seconds=self._total_wait_seconds,
+            return self._state_now()
+
+    def _state_now(self) -> AdmissionState:
+        """Build the admission view synchronously; it never yields, so it is consistent."""
+        now = time.monotonic()
+        wall = datetime.now(UTC)
+        interval = self.config.admission_heartbeat_interval_seconds
+        priorities: dict[int, int] = {}
+        views: list[AdmissionWaiterState] = []
+        for position, waiter in enumerate(self._waiters):
+            priorities[waiter.priority] = priorities.get(waiter.priority, 0) + 1
+            beat = waiter.last_heartbeat
+            overdue = (
+                interval is not None
+                and now - (waiter.started if beat is None else beat) > interval * _OVERDUE_INTERVALS
             )
+            views.append(
+                AdmissionWaiterState(
+                    sequence=waiter.sequence,
+                    lease_id=waiter.lease_id,
+                    priority=waiter.priority,
+                    position=position,
+                    status="heartbeat_overdue" if overdue else "waiting",
+                    wait_seconds=max(0.0, now - waiter.started),
+                    timeout_seconds=waiter.timeout,
+                    remaining_seconds=(
+                        None if waiter.deadline is None else max(0.0, waiter.deadline - now)
+                    ),
+                    heartbeat_count=waiter.heartbeats,
+                    last_heartbeat_age_seconds=None if beat is None else max(0.0, now - beat),
+                    missed_heartbeat_count=waiter.missed_heartbeats,
+                    max_heartbeat_delay_seconds=waiter.max_heartbeat_delay,
+                )
+            )
+        indefinite = sum(1 for waiter in self._waiters if waiter.deadline is None)
+        last = self._last_heartbeat
+        return AdmissionState(
+            queue_capacity=self.config.max_waiters,
+            queue_depth=len(self._waiters),
+            available_queue_slots=self.config.max_waiters - len(self._waiters),
+            oldest_wait_seconds=(
+                max(0.0, now - min(waiter.started for waiter in self._waiters))
+                if self._waiters
+                else None
+            ),
+            priority_distribution=tuple(sorted(priorities.items(), reverse=True)),
+            active_reservations=len(self._owned),
+            rejected_count=self._rejected_count,
+            timeout_count=self._timeout_count,
+            cancelled_waiter_count=self._cancelled_waiter_count,
+            completed_wait_count=self._completed_wait_count,
+            total_wait_seconds=self._total_wait_seconds,
+            admitted_waiter_count=self._admitted_waiter_count,
+            shutdown_waiter_count=self._shutdown_waiter_count,
+            indefinite_waiter_count=indefinite,
+            finite_waiter_count=len(self._waiters) - indefinite,
+            heartbeat_interval_seconds=interval,
+            heartbeat_count=self._heartbeat_count,
+            missed_heartbeat_count=self._missed_heartbeat_count,
+            max_heartbeat_delay_seconds=self._max_heartbeat_delay,
+            last_heartbeat_at=(
+                None if last is None else wall - timedelta(seconds=max(0.0, now - last))
+            ),
+            heartbeat_overdue_waiter_count=sum(
+                1 for view in views if view.status == "heartbeat_overdue"
+            ),
+            waiters=tuple(views),
+        )
+
+    def _heartbeat(self, waiter: _Waiter) -> None:
+        """Record liveness for a still-queued waiter when its heartbeat is due.
+
+        A heartbeat only updates counters and timestamps: it never touches the queue,
+        permits, reservations, priorities or the deadline, and it cannot revive a waiter
+        that already left the queue. Late heartbeats are coalesced into one and the
+        skipped intervals are counted as missed rather than replayed.
+        """
+        interval = self.config.admission_heartbeat_interval_seconds
+        now = time.monotonic()
+        if (
+            interval is None
+            or waiter.outcome != "waiting"
+            or now + _CLOCK_TOLERANCE < waiter.next_heartbeat
+        ):
+            return
+        delay = max(0.0, now - waiter.next_heartbeat)
+        missed = int(delay // interval)
+        waiter.heartbeats += 1
+        waiter.last_heartbeat = now
+        waiter.missed_heartbeats += missed
+        waiter.max_heartbeat_delay = max(delay, waiter.max_heartbeat_delay or 0.0)
+        waiter.next_heartbeat = now + interval
+        self._heartbeat_count += 1
+        self._missed_heartbeat_count += missed
+        self._max_heartbeat_delay = max(delay, self._max_heartbeat_delay or 0.0)
+        self._last_heartbeat = now
+
+    def _leave(self, waiter: _Waiter, outcome: str) -> None:
+        """End a waiter's queue lifecycle exactly once; later calls are ignored."""
+        if waiter.outcome != "waiting":
+            return
+        waiter.outcome = outcome
+        if outcome == "admitted":
+            self._admitted_waiter_count += 1
+        elif outcome == "shutdown":
+            self._shutdown_waiter_count += 1
+        if waiter in self._waiters:
+            self._waiters.remove(waiter)
+            self._record_wait(waiter)
+            self._notify()
+
+    async def _park(self, waiter: _Waiter, changed: anyio.Event, poll: bool) -> None:
+        """Sleep until the queue changes, the head poll or deadline is due, heartbeating.
+
+        Heartbeat wake-ups only record liveness and go back to sleep; they never re-run
+        admission and never move the caller's deadline.
+        """
+        interval = self.config.admission_heartbeat_interval_seconds
+        poll_at = time.monotonic() + _HEAD_POLL_SECONDS if poll else None
+        wake_at = min((at for at in (waiter.deadline, poll_at) if at is not None), default=None)
+        while True:
+            self._heartbeat(waiter)
+            target = (
+                wake_at
+                if interval is None
+                else min(waiter.next_heartbeat, float("inf") if wake_at is None else wake_at)
+            )
+            delay = None if target is None else max(0.0, target - time.monotonic())
+            with anyio.move_on_after(delay):
+                await changed.wait()
+                return
+            if wake_at is not None and time.monotonic() >= wake_at:
+                return
 
     def _record_wait(self, waiter: _Waiter) -> None:
         self._completed_wait_count += 1
@@ -282,10 +422,22 @@ class AdmissionCoordinator:
                         await self._rejected(requirements, "The bounded admission queue is full.")
                     )
                 self._sequence += 1
-                waiter = _Waiter(requirements.priority, self._sequence, time.monotonic())
+                started = time.monotonic()
+                interval = self.config.admission_heartbeat_interval_seconds
+                waiter = _Waiter(
+                    requirements.priority,
+                    self._sequence,
+                    started,
+                    lease_id=lease_id,
+                    timeout=wait_timeout_seconds,
+                    deadline=deadline,
+                    next_heartbeat=float("inf") if interval is None else started + interval,
+                )
                 self._enqueue(waiter)
                 self._notify()
             while True:
+                if waiter is not None:
+                    self._heartbeat(waiter)
                 async with self._lock:
                     if self._closing:
                         raise ManagerStateError("the resource manager is closing")
@@ -325,10 +477,8 @@ class AdmissionCoordinator:
                                 )
                                 raise AdmissionRejectedError(decision, timed_out=True)
                             if waiter is not None:
-                                self._waiters.remove(waiter)
-                                self._record_wait(waiter)
+                                self._leave(waiter, "admitted")
                                 waiter = None
-                                self._notify()
                             break
                     changed = self._changed
                 if not wait:
@@ -345,37 +495,37 @@ class AdmissionCoordinator:
                             update={"reason": f"Admission timed out: {decision.reason}"}
                         )
                     raise AdmissionRejectedError(decision, timed_out=True)
-                delay = min(remaining, 0.25) if is_head and remaining is not None else remaining
-                if is_head and remaining is None:
-                    delay = 0.25
-                with anyio.move_on_after(delay):
-                    await changed.wait()
+                if waiter is None:
+                    raise RuntimeError("a waiting admission request has no queue entry")
+                await self._park(waiter, changed, is_head)
             await anyio.lowlevel.checkpoint_if_cancelled()
             if lease is None:
                 raise RuntimeError("an accepted admission did not create a lease")
             return lease
         except BaseException as exc:
+            outcome = "rejected"
             if isinstance(exc, AdmissionRejectedError):
                 self._rejected_count += 1
                 if timed_out:
                     self._timeout_count += 1
-            elif waiter is not None and isinstance(exc, anyio.get_cancelled_exc_class()):
-                self._cancelled_waiter_count += 1
+                    outcome = "timed_out"
+            elif isinstance(exc, anyio.get_cancelled_exc_class()):
+                outcome = "cancelled"
+                if waiter is not None:
+                    self._cancelled_waiter_count += 1
+            elif isinstance(exc, ManagerStateError) and self._closing:
+                outcome = "shutdown"
             if lease is not None:
                 with anyio.CancelScope(shield=True):
                     try:
                         await self.compensate(lease.id, attempt_id)
                     except ReservationError:
                         _LOG.exception("Could not compensate a cancelled reservation")
-            raise
-        finally:
             if waiter is not None:
                 with anyio.CancelScope(shield=True):
                     async with self._lock:
-                        if waiter in self._waiters:
-                            self._waiters.remove(waiter)
-                            self._record_wait(waiter)
-                            self._notify()
+                        self._leave(waiter, outcome)
+            raise
 
     async def compensate(self, lease_id: str, attempt_id: str) -> None:
         """Release only a lease created by this cancelled acquisition attempt."""

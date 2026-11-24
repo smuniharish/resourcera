@@ -36,6 +36,7 @@ class ResourceConfig(BaseModel):
     max_waiters: int = Field(default=128, ge=1, strict=True)
     admission_max_bypass: int = Field(default=8, ge=0, strict=True)
     admission_wait_timeout_seconds: float | None = Field(default=5.0, gt=0)
+    admission_heartbeat_interval_seconds: float | None = Field(default=2.0, ge=0.05, le=3600)
     concurrency_wait_timeout_seconds: float | None = Field(default=None, gt=0)
     concurrency_adjustment_interval_seconds: float = Field(default=2.0, gt=0)
     concurrency_increase_step: int = Field(default=1, ge=1, strict=True)

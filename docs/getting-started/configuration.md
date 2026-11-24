@@ -36,8 +36,11 @@ Adaptive concurrency controllers re-evaluate capacity every
 `concurrency_wait_timeout_seconds` defaults to `None` (no permit deadline).
 Either can be configured as `None` for indefinite waits. Queue sizes are still
 bounded. `admission_max_bypass` (default 8) limits how many later,
-higher-priority requests can be inserted ahead of a queued request. See
-[Admission](../guide/admission.md) for per-call overrides and fairness.
+higher-priority requests can be inserted ahead of a queued request.
+`admission_heartbeat_interval_seconds` (default 2, range 0.05–3600, `None` to
+disable) sets how often queued admission requests record a liveness heartbeat;
+heartbeats never admit a request or change its deadline. See
+[Admission](../guide/admission.md) for per-call overrides, fairness and heartbeats.
 
 Count fields (`max_provider_concurrency`, `max_concurrency`, `max_waiters`,
 `admission_max_bypass`, `concurrency_increase_step`, `concurrency_history_size`)
