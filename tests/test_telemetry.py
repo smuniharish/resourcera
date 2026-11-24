@@ -1,4 +1,5 @@
 import sys
+import time
 from collections import namedtuple
 from datetime import UTC, datetime
 from pathlib import Path
@@ -135,6 +136,69 @@ def test_sampler_handles_missing_cpu_frequency(monkeypatch: pytest.MonkeyPatch) 
     assert frequency.value is None
     assert frequency.status is MetricStatus.UNSUPPORTED
     assert "not exposed" in (frequency.detail or "")
+
+
+def test_windows_swap_probe_is_deferred_and_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    _isolate_optional_probes(monkeypatch)
+    monkeypatch.setattr("resourcera.telemetry.sys.platform", "win32")
+    now = [time.monotonic()]
+    monkeypatch.setattr(SampleClock, "now", lambda: SampleClock(datetime.now(UTC), now[0]))
+    calls = 0
+
+    def swap_memory():
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(total=100, used=40)
+
+    monkeypatch.setattr(psutil, "swap_memory", swap_memory)
+    sampler = SystemSampler(ResourceConfig())
+    first = sampler.sample(sample_io=True).memory
+    assert first.swap_total_bytes.value is None
+    assert first.swap_total_bytes.status is MetricStatus.UNAVAILABLE
+    assert calls == 0
+    sampler.sample(sample_io=False)
+    assert calls == 0
+    sampler.sample(sample_io=True)
+    assert calls == 0
+    now[0] += 60
+    refreshed = sampler.sample(sample_io=True).memory
+    assert (refreshed.swap_total_bytes.value, refreshed.swap_used_bytes.value) == (100, 40)
+    assert calls == 1
+    cached = sampler.sample(sample_io=False).memory
+    assert cached.swap_used_bytes == refreshed.swap_used_bytes
+    assert calls == 1
+    sampler.sample(sample_io=True)
+    assert calls == 1
+    now[0] += 121
+    stale = sampler.sample(sample_io=False).memory.swap_used_bytes
+    assert stale.status_at(now[0]) is MetricStatus.STALE
+    assert calls == 1
+
+    def failed():
+        raise OSError("swap probe failed")
+
+    monkeypatch.setattr(psutil, "swap_memory", failed)
+    error = sampler.sample(sample_io=True).memory.swap_used_bytes
+    assert error.value is None
+    assert error.status is MetricStatus.ERROR
+    assert "swap probe failed" in (error.detail or "")
+
+
+def test_non_windows_swap_probe_remains_in_fast_samples(monkeypatch: pytest.MonkeyPatch) -> None:
+    _isolate_optional_probes(monkeypatch)
+    monkeypatch.setattr("resourcera.telemetry.sys.platform", "linux")
+    calls = 0
+
+    def swap_memory():
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(total=100, used=40)
+
+    monkeypatch.setattr(psutil, "swap_memory", swap_memory)
+    sampler = SystemSampler(ResourceConfig())
+    sampler.sample(sample_io=False)
+    sampler.sample(sample_io=False)
+    assert calls == 2
 
 
 def test_process_virtual_memory_preserves_availability(monkeypatch: pytest.MonkeyPatch) -> None:

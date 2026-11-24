@@ -16,7 +16,8 @@ from resourcera import (
     WorkloadRequirements,
 )
 from resourcera.coordination import ReservationStore
-from resourcera.models import ResourceSnapshot, Scope
+from resourcera.metrics import SampleClock, metric
+from resourcera.models import LimitState, ResourceSnapshot, Scope
 
 
 @pytest.fixture(params=["asyncio", "trio"])
@@ -85,6 +86,74 @@ async def test_process_managers_share_claims(snapshot: ResourceSnapshot) -> None
 
 
 @pytest.mark.anyio
+async def test_memory_heavy_sessions_share_global_reservations(
+    snapshot: ResourceSnapshot,
+) -> None:
+    memory = snapshot.memory.model_copy(
+        update={
+            "available_bytes": metric(
+                10 * 1024**3, "bytes", "test", Scope.MACHINE, SampleClock.now(), 60
+            ),
+            "cgroup_limit_state": LimitState.UNLIMITED,
+        }
+    )
+    manager = await start_manager(
+        snapshot.model_copy(update={"memory": memory}),
+        settings(max_concurrency=4, max_waiters=4, safety_margin=0),
+    )
+    session_limits = [anyio.CapacityLimiter(2), anyio.CapacityLimiter(2)]
+    scopes: dict[tuple[int, int], anyio.CancelScope] = {}
+    active: set[tuple[int, int]] = set()
+    completed: set[tuple[int, int]] = set()
+    finished_cancelled = anyio.Event()
+    release = anyio.Event()
+    victim: list[tuple[int, int]] = []
+
+    async def process(session: int, index: int) -> None:
+        key = (session, index)
+        with anyio.CancelScope() as scope:
+            scopes[key] = scope
+            try:
+                async with (
+                    session_limits[session],
+                    manager.admission({"memory": "3.2GiB"}, wait=True, wait_timeout_seconds=None),
+                ):
+                    active.add(key)
+                    try:
+                        await release.wait()
+                        completed.add(key)
+                    finally:
+                        active.remove(key)
+            finally:
+                if victim and key == victim[0]:
+                    finished_cancelled.set()
+
+    try:
+        with anyio.fail_after(10):
+            async with anyio.create_task_group() as tasks:
+                for session in range(2):
+                    for index in range(2):
+                        tasks.start_soon(process, session, index)
+                while len(active) != 3 or (await manager.admission_state()).queue_depth != 1:  # noqa: ASYNC110
+                    await anyio.sleep(0.01)
+                assert all(sum(key[0] == session for key in active) <= 2 for session in range(2))
+                victim.append(next(iter(active)))
+                scopes[victim[0]].cancel()
+                await finished_cancelled.wait()
+                while len(active) != 3 or victim[0] in active:  # noqa: ASYNC110
+                    await anyio.sleep(0.01)
+                release.set()
+        assert len(completed) == 3
+        assert (await manager.admission_state()).active_reservations == 0
+        with pytest.raises(RuntimeError, match="processing failed"):
+            async with manager.admission({"memory": "3.2GiB"}):
+                raise RuntimeError("processing failed")
+        assert (await manager.admission_state()).active_reservations == 0
+    finally:
+        await manager.close()
+
+
+@pytest.mark.anyio
 async def test_waiters_are_bounded_and_prioritized(snapshot: ResourceSnapshot) -> None:
     manager = await start_manager(snapshot, settings(max_concurrency=1, max_waiters=2))
     order: list[int] = []
@@ -119,12 +188,26 @@ async def test_waiters_are_bounded_and_prioritized(snapshot: ResourceSnapshot) -
                     if await queue_size() >= 2:
                         break
                     await anyio.sleep(0.01)
+            state = await manager.admission_state()
+            assert (state.queue_capacity, state.queue_depth, state.available_queue_slots) == (
+                2,
+                2,
+                0,
+            )
+            assert state.priority_distribution == ((10, 1), (1, 1))
+            assert state.oldest_wait_seconds is not None
+            assert state.active_reservations == 1
             with pytest.raises(AdmissionRejectedError, match="queue is full"):
                 await manager.reserve({"memory": "1GB"}, wait=True)
             with pytest.raises(AdmissionRejectedError, match="queued"):
                 await manager.reserve({"memory": "1GB"})
             await manager.release(held)
         assert order == [10, 1]
+        state = await manager.admission_state()
+        assert state.queue_depth == 0
+        assert state.completed_wait_count == 2
+        assert state.total_wait_seconds > 0
+        assert state.rejected_count == 2
     finally:
         await manager.close()
 
@@ -137,6 +220,9 @@ async def test_wait_timeout_and_external_cancellation_cleanup(snapshot: Resource
         with pytest.raises(AdmissionRejectedError, match="timed out") as rejected:
             await manager.reserve({"memory": "1GB"}, wait=True, wait_timeout_seconds=0.15)
         assert rejected.value.decision.capacity.max_concurrency == 0
+        assert rejected.value.timed_out
+        state = await manager.admission_state()
+        assert (state.rejected_count, state.timeout_count, state.completed_wait_count) == (1, 1, 1)
         finished = anyio.Event()
         scopes: list[anyio.CancelScope] = []
 
@@ -159,6 +245,72 @@ async def test_wait_timeout_and_external_cancellation_cleanup(snapshot: Resource
         await manager.release(held)
         lease = await manager.reserve({"memory": "1GB"})
         await manager.release(lease)
+    finally:
+        await manager.close()
+
+
+@pytest.mark.anyio
+async def test_explicit_none_waits_beyond_configured_admission_timeout(
+    snapshot: ResourceSnapshot,
+) -> None:
+    manager = await start_manager(
+        snapshot, settings(max_concurrency=1, admission_wait_timeout_seconds=0.05)
+    )
+    try:
+        held = await manager.reserve({"memory": "1GB"})
+        with pytest.raises(AdmissionRejectedError, match="timed out"):
+            await manager.reserve({"memory": "1GB"}, wait=True)
+
+        finished = anyio.Event()
+
+        async def waiter() -> None:
+            async with manager.admission({"memory": "1GB"}, wait=True, wait_timeout_seconds=None):
+                finished.set()
+
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(waiter)
+            await anyio.sleep(0.15)
+            assert not finished.is_set()
+            await manager.release(held)
+            with anyio.fail_after(2):
+                await finished.wait()
+        replacement = await manager.reserve({"memory": "1GB"})
+        await manager.release(replacement)
+    finally:
+        await manager.close()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("count", [200, 500, 1000])
+async def test_bounded_admission_queue_under_contention(
+    snapshot: ResourceSnapshot, count: int
+) -> None:
+    manager = await start_manager(
+        snapshot,
+        settings(max_concurrency=8, max_waiters=count, admission_wait_timeout_seconds=None),
+    )
+    completed = 0
+    active = 0
+    peak = 0
+    try:
+
+        async def worker() -> None:
+            nonlocal completed, active, peak
+            async with manager.admission({"memory": "1MB"}, wait=True):
+                active += 1
+                peak = max(peak, active)
+                await anyio.lowlevel.checkpoint()
+                active -= 1
+                completed += 1
+
+        with anyio.fail_after(90):
+            async with anyio.create_task_group() as tasks:
+                for _ in range(count):
+                    tasks.start_soon(worker)
+        state = await manager.admission_state()
+        assert completed == count
+        assert peak <= 8
+        assert (state.queue_depth, state.active_reservations, state.rejected_count) == (0, 0, 0)
     finally:
         await manager.close()
 

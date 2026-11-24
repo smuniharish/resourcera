@@ -22,6 +22,11 @@ consumption; process RSS is not subtracted again. RSS, USS, host memory, cgroup
 memory, and managed library state overlap and must not be added as independent
 allocations. Container identity is best-effort and namespace-dependent.
 
+On Windows, swap metrics are initially unavailable because the psutil swap probe
+can be expensive. The first probe waits at least one CPU-budget window and runs
+on a slow sample; subsequent probes are also at least one window apart. Between
+probes the last observation retains its original timestamp and may become stale.
+
 Linux pressure stall information is included when available. NUMA node counts are
 used in the slow internal inventory; detailed NUMA placement is not currently
 exposed as a public metric.

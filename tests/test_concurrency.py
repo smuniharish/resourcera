@@ -398,6 +398,26 @@ async def test_first_measurable_capacity_calibrates_the_limit_directly(
 
 
 @pytest.mark.anyio
+async def test_initial_calibration_waits_for_reliable_measurements(
+    snapshot: ResourceSnapshot,
+) -> None:
+    degraded = snapshot.overhead.model_copy(update={"degraded": True})
+    manager = await start_manager(
+        with_memory(snapshot, 5 * GB).model_copy(update={"overhead": degraded}),
+        settings(),
+    )
+    try:
+        async with manager.adaptive_concurrency(MEMORY, max_concurrency=10) as controller:
+            assert controller.current_limit == 1
+            assert "Waiting for reliable" in controller.state.adjustment_reason
+            use(manager, with_memory(snapshot, 5 * GB))
+            state = await controller.adjust()
+            assert state.current_limit == 5
+    finally:
+        await manager.close()
+
+
+@pytest.mark.anyio
 async def test_waiters_are_bounded_fair_and_cancellation_safe(snapshot: ResourceSnapshot) -> None:
     manager = await start_manager(snapshot, settings())
     try:
@@ -441,17 +461,211 @@ async def test_wait_timeout_and_slot_reuse(snapshot: ResourceSnapshot) -> None:
         ) as controller:
             slot = controller.slot()
             async with slot:
-                with pytest.raises(AdmissionRejectedError, match="timed out"):
+                with pytest.raises(AdmissionRejectedError, match="timed out") as error:
                     async with controller.slot():
                         pass
+                assert error.value.timed_out
             with pytest.raises(ManagerStateError, match="reused"):
                 async with slot:
                     pass
             assert controller.state.available_permits == 1
+            assert (controller.state.rejected_count, controller.state.timeout_count) == (1, 1)
         with pytest.raises(ValueError, match="max_waiters"):
             manager.adaptive_concurrency(MEMORY, max_waiters=0)
         with pytest.raises(ValueError, match="wait_timeout"):
             manager.adaptive_concurrency(MEMORY, wait_timeout_seconds=0)
+    finally:
+        await manager.close()
+
+
+@pytest.mark.anyio
+async def test_permit_timeout_omitted_uses_default_but_none_waits(
+    snapshot: ResourceSnapshot,
+) -> None:
+    manager = await start_manager(snapshot, settings(concurrency_wait_timeout_seconds=0.05))
+    try:
+        async with (
+            manager.adaptive_concurrency(MEMORY, max_concurrency=1) as controller,
+            controller.slot(),
+        ):
+            with pytest.raises(AdmissionRejectedError, match="timed out"):
+                async with controller.slot():
+                    pass
+
+        finished = anyio.Event()
+        async with manager.adaptive_concurrency(
+            MEMORY, max_concurrency=1, wait_timeout_seconds=None
+        ) as controller:
+
+            async def waiter() -> None:
+                async with controller.slot():
+                    finished.set()
+
+            async with anyio.create_task_group() as tasks:
+                async with controller.slot():
+                    tasks.start_soon(waiter)
+                    await eventually(lambda: controller.state.pending_count == 1)
+                    await anyio.sleep(0.15)
+                    assert not finished.is_set()
+                with anyio.fail_after(2):
+                    await finished.wait()
+            assert controller.state.available_permits == 1
+    finally:
+        await manager.close()
+
+
+@pytest.mark.anyio
+async def test_controller_admission_timeout_is_independently_configurable(
+    snapshot: ResourceSnapshot,
+) -> None:
+    manager = await start_manager(
+        snapshot, settings(max_concurrency=1, admission_wait_timeout_seconds=0.05)
+    )
+    try:
+        held = await manager.reserve(MEMORY)
+        async with manager.adaptive_concurrency(MEMORY, max_concurrency=1) as controller:
+            with pytest.raises(AdmissionRejectedError, match="timed out") as error:
+                async with controller.slot():
+                    pass
+            assert error.value.timed_out
+            assert controller.state.available_permits == 1
+            assert (controller.state.rejected_count, controller.state.timeout_count) == (1, 1)
+
+        finished = anyio.Event()
+        async with manager.adaptive_concurrency(
+            MEMORY,
+            max_concurrency=1,
+            wait_timeout_seconds=None,
+            admission_wait_timeout_seconds=None,
+        ) as controller:
+
+            async def waiter() -> None:
+                async with controller.slot():
+                    finished.set()
+
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(waiter)
+                await anyio.sleep(0.15)
+                assert not finished.is_set()
+                await manager.release(held)
+                with anyio.fail_after(2):
+                    await finished.wait()
+            assert controller.state.available_permits == 1
+            assert controller.state.active_count == 0
+    finally:
+        await manager.close()
+
+
+@pytest.mark.anyio
+async def test_manager_close_wakes_controller_permit_waiters(snapshot: ResourceSnapshot) -> None:
+    manager = await start_manager(snapshot, settings())
+    try:
+        async with manager.adaptive_concurrency(MEMORY, max_concurrency=1) as controller:
+            token = object()
+            await controller._acquire(token)
+            errors: list[Exception] = []
+
+            async def waiter() -> None:
+                try:
+                    async with controller.slot():
+                        pytest.fail("a closed manager must not admit new work")
+                except ManagerStateError as exc:
+                    errors.append(exc)
+
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(waiter)
+                await eventually(lambda: controller.state.pending_count == 1)
+                await manager.close()
+                with anyio.fail_after(2):
+                    await eventually(lambda: bool(errors))
+            controller._limiter.release_on_behalf_of(token)
+            assert controller.state.pending_count == 0
+    finally:
+        await manager.close()
+
+
+@pytest.mark.anyio
+async def test_controller_close_cancels_indefinite_admission_wait(
+    snapshot: ResourceSnapshot,
+) -> None:
+    manager = await start_manager(snapshot, settings(max_concurrency=1))
+    held = await manager.reserve(MEMORY)
+    stop = anyio.Event()
+    errors: list[Exception] = []
+    try:
+
+        async def owner(*, task_status=anyio.TASK_STATUS_IGNORED) -> None:
+            async with manager.adaptive_concurrency(
+                MEMORY, admission_wait_timeout_seconds=None
+            ) as controller:
+                task_status.started(controller)
+                await stop.wait()
+
+        async def waiter(controller) -> None:
+            try:
+                async with controller.slot():
+                    pytest.fail("closed controller admitted work")
+            except ManagerStateError as exc:
+                errors.append(exc)
+
+        async with anyio.create_task_group() as tasks:
+            controller = await tasks.start(owner)
+            tasks.start_soon(waiter, controller)
+            await eventually(lambda: len(controller._admission_waiting) == 1)
+            state = controller.state
+            assert (
+                state.pending_count,
+                state.admission_waiter_count,
+                state.total_pending_count,
+            ) == (
+                0,
+                1,
+                1,
+            )
+            stop.set()
+            await eventually(lambda: bool(errors))
+            assert controller.state.available_permits == 1
+            assert controller.state.active_count == 0
+        await manager.release(held)
+        replacement = await manager.reserve(MEMORY)
+        await manager.release(replacement)
+    finally:
+        await manager.close()
+
+
+@pytest.mark.anyio
+async def test_cancel_during_admission_releases_controller_permit(
+    snapshot: ResourceSnapshot,
+) -> None:
+    manager = await start_manager(snapshot, settings(max_concurrency=1))
+    held = await manager.reserve(MEMORY)
+    scopes: list[anyio.CancelScope] = []
+    done = anyio.Event()
+    try:
+        async with manager.adaptive_concurrency(
+            MEMORY, admission_wait_timeout_seconds=None
+        ) as controller:
+
+            async def waiter() -> None:
+                with anyio.CancelScope() as scope:
+                    scopes.append(scope)
+                    try:
+                        async with controller.slot():
+                            pytest.fail("cancelled admission was granted")
+                    finally:
+                        done.set()
+
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(waiter)
+                await eventually(lambda: len(controller._admission_waiting) == 1)
+                scopes[0].cancel()
+                with anyio.fail_after(2):
+                    await done.wait()
+            assert controller.state.available_permits == 1
+            assert controller.state.active_count == 0
+        await manager.release(held)
+        replacement = await manager.reserve(MEMORY)
+        await manager.release(replacement)
     finally:
         await manager.close()
 

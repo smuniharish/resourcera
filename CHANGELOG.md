@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased (0.3.0)
+
+- Refresh runtime, optional, development, documentation, build, and transitive
+  dependencies to current compatible stable releases.
+- Distinguish omitted admission timeouts (configured default) from an explicit
+  `None` (indefinite wait). This intentionally changes the meaning of explicitly
+  passing `None`; omit the argument for the previous configured timeout.
+- Configure controller-permit and resource-admission timeouts independently and
+  wake waiters at either stage when their controller or manager closes.
+- Expose manager-local admission queue state and distinguish controller permit
+  waiters from operations awaiting a lease.
+- Add separate process-local remote concurrency controllers with feedback,
+  cooldown, Retry-After, remote queue-wait observations and application-reported
+  capacity ceilings.
+- Delay initial local calibration until measurements are fresh and monitoring is
+  not degraded.
+- Defer costly Windows swap sampling to the slower sampling cycle, preserving
+  unavailable and stale status rather than inventing measurements.
+
 ## Unreleased (0.2.1)
 
 - Add live PyPI download badges to the README and documentation homepage.

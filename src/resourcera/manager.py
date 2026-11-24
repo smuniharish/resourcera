@@ -13,9 +13,11 @@ from collections.abc import Awaitable, Callable, Mapping
 from concurrent.futures import Future
 from contextlib import AbstractContextManager, suppress
 from dataclasses import replace
+from enum import Enum
 from types import TracebackType
 from typing import TYPE_CHECKING, Literal, Self
 from uuid import uuid4
+from weakref import WeakSet
 
 import anyio
 from anyio.from_thread import BlockingPortal, start_blocking_portal
@@ -51,6 +53,7 @@ from resourcera.metrics import SampleClock, metric
 from resourcera.models import (
     AcceleratorDevice,
     AdmissionDecision,
+    AdmissionState,
     CapacityResult,
     ConcurrencyRecommendation,
     DeviceStatus,
@@ -64,12 +67,17 @@ from resourcera.models import (
     WorkloadRequirements,
 )
 from resourcera.overhead import OverheadController, OverheadState, managed_size
+from resourcera.remote import RemoteConcurrencyController
 from resourcera.telemetry import SystemSampler, Telemetry
 
 if TYPE_CHECKING:
     from refresh_engine import StateStore
 
 _LOG = logging.getLogger(__name__)
+
+
+class _Unset(Enum):
+    TOKEN = 0
 
 
 def _schedule_in_loop(token: EventLoopToken, callback: Callable[[], None]) -> None:
@@ -1036,6 +1044,8 @@ class ResourceManager:
         self._runtime: _Runtime | None = None
         self._portal_context: AbstractContextManager[BlockingPortal] | None = None
         self._portal: BlockingPortal | None = None
+        self._controllers: WeakSet[ConcurrencyController] = WeakSet()
+        self._remote_controllers: WeakSet[RemoteConcurrencyController] = WeakSet()
 
     async def start(self) -> None:
         """Start monitoring and wait for the first cached observation."""
@@ -1094,13 +1104,17 @@ class ResourceManager:
         )
         return await self._call_runtime(lambda runtime: runtime.coordinator().capacity(request))
 
+    async def admission_state(self) -> AdmissionState:
+        """Return this manager's admission queue and owned reservation counters."""
+        return await self._call_runtime(lambda runtime: runtime.coordinator().state())
+
     async def reserve(
         self,
         requirements: WorkloadRequirements | Mapping[str, object],
         *,
         lease_id: str | None = None,
         wait: bool = False,
-        wait_timeout_seconds: float | None = None,
+        wait_timeout_seconds: float | _Unset | None = _Unset.TOKEN,
         auto_renew: bool = True,
     ) -> ResourceLease:
         """Acquire a logical lease, rejecting immediately unless bounded waiting is requested."""
@@ -1114,7 +1128,7 @@ class ResourceManager:
         delivery = threading.Event()
         duration = (
             self.config.admission_wait_timeout_seconds
-            if wait_timeout_seconds is None
+            if wait_timeout_seconds is _Unset.TOKEN
             else wait_timeout_seconds
         )
         runtime = self._runtime
@@ -1168,7 +1182,7 @@ class ResourceManager:
         requirements: WorkloadRequirements | Mapping[str, object],
         *,
         wait: bool = False,
-        wait_timeout_seconds: float | None = None,
+        wait_timeout_seconds: float | _Unset | None = _Unset.TOKEN,
     ) -> _AdmissionContext:
         """Create a cancellation-safe context for resource-aware work."""
         return _AdmissionContext(
@@ -1208,14 +1222,15 @@ class ResourceManager:
         min_concurrency: int = 1,
         max_concurrency: int | None = None,
         max_waiters: int | None = None,
-        wait_timeout_seconds: float | None = None,
+        wait_timeout_seconds: float | _Unset | None = _Unset.TOKEN,
+        admission_wait_timeout_seconds: float | _Unset | None = _Unset.TOKEN,
     ) -> AdaptiveConcurrency:
         """Create a context that yields an adaptive controller for one workload.
 
         Each ``controller.slot()`` holds a local permit and a logical lease. The limit adapts
         within the bounds; lowering it never cancels admitted work. ``max_waiters`` defaults to
-        the configured admission queue bound, and ``wait_timeout_seconds=None`` waits for a
-        permit until the caller is cancelled.
+        the configured admission queue bound. An omitted timeout uses its configured
+        default; an explicit ``None`` waits until admission, cancellation, or shutdown.
         """
         request = (
             requirements
@@ -1227,18 +1242,63 @@ class ResourceManager:
         waiters = self.config.max_waiters if max_waiters is None else max_waiters
         if waiters < 1:
             raise ValueError("max_waiters must be positive")
-        if wait_timeout_seconds is not None and not 0 < wait_timeout_seconds < float("inf"):
-            raise ValueError("wait_timeout_seconds must be finite and positive")
-        return AdaptiveConcurrency(
-            ConcurrencyController(
-                self,
-                request,
-                minimum=min_concurrency,
-                maximum=maximum,
-                max_waiters=waiters,
-                wait_timeout_seconds=wait_timeout_seconds,
-            )
+        permit_timeout = (
+            self.config.concurrency_wait_timeout_seconds
+            if wait_timeout_seconds is _Unset.TOKEN
+            else wait_timeout_seconds
         )
+        admission_timeout = (
+            self.config.admission_wait_timeout_seconds
+            if admission_wait_timeout_seconds is _Unset.TOKEN
+            else admission_wait_timeout_seconds
+        )
+        if permit_timeout is not None and not 0 < permit_timeout < float("inf"):
+            raise ValueError("wait_timeout_seconds must be finite and positive")
+        if admission_timeout is not None and not 0 < admission_timeout < float("inf"):
+            raise ValueError("admission_wait_timeout_seconds must be finite and positive")
+        controller = ConcurrencyController(
+            self,
+            request,
+            minimum=min_concurrency,
+            maximum=maximum,
+            max_waiters=waiters,
+            wait_timeout_seconds=permit_timeout,
+            admission_wait_timeout_seconds=admission_timeout,
+        )
+        self._controllers.add(controller)
+        return AdaptiveConcurrency(controller)
+
+    def remote_concurrency(
+        self,
+        key: str,
+        *,
+        min_concurrency: int = 1,
+        initial_concurrency: int = 1,
+        max_concurrency: int = 32,
+        max_waiters: int = 128,
+        wait_timeout_seconds: float | None = None,
+        observation_window_seconds: float = 1.0,
+        cooldown_seconds: float = 1.0,
+        minimum_samples: int = 4,
+        history_size: int = 32,
+    ) -> RemoteConcurrencyController:
+        """Create an independent process-local controller for application feedback."""
+        if self._state in {"closing", "closed"}:
+            raise ManagerStateError("the resource manager is closing or closed")
+        controller = RemoteConcurrencyController(
+            key,
+            min_concurrency=min_concurrency,
+            initial_concurrency=initial_concurrency,
+            max_concurrency=max_concurrency,
+            max_waiters=max_waiters,
+            wait_timeout_seconds=wait_timeout_seconds,
+            observation_window_seconds=observation_window_seconds,
+            cooldown_seconds=cooldown_seconds,
+            minimum_samples=minimum_samples,
+            history_size=history_size,
+        )
+        self._remote_controllers.add(controller)
+        return controller
 
     async def refresh_accelerators(self) -> tuple[AcceleratorDevice, ...]:
         """Perform bounded on-demand accelerator discovery and telemetry."""
@@ -1269,6 +1329,10 @@ class ResourceManager:
                 if self._state == "closed":
                     return
                 self._state = "closing"
+                for controller in tuple(self._controllers):
+                    controller._close()
+                for controller in tuple(self._remote_controllers):
+                    controller._close()
                 try:
                     await self._shutdown()
                 finally:
@@ -1289,7 +1353,7 @@ class _AdmissionContext:
         requirements: WorkloadRequirements | Mapping[str, object],
         *,
         wait: bool,
-        wait_timeout_seconds: float | None,
+        wait_timeout_seconds: float | _Unset | None,
     ) -> None:
         self._manager = manager
         self._requirements = requirements
@@ -1298,13 +1362,31 @@ class _AdmissionContext:
         self._lease: ResourceLease | None = None
         self._scope: anyio.CancelScope | None = None
         self._closed = False
+        self._wait_scopes: dict[anyio.CancelScope, float] | None = None
 
     async def __aenter__(self) -> AdmissionDecision:
         if self._lease is not None or self._closed:
             raise ManagerStateError("an admission context cannot be reused")
-        lease = await self._manager.reserve(
-            self._requirements, wait=self._wait, wait_timeout_seconds=self._wait_timeout_seconds
-        )
+        if self._wait_scopes is None:
+            lease = await self._manager.reserve(
+                self._requirements, wait=self._wait, wait_timeout_seconds=self._wait_timeout_seconds
+            )
+        else:
+            waiting = anyio.CancelScope()
+            self._wait_scopes[waiting] = time.monotonic()
+            try:
+                with waiting:
+                    lease = await self._manager.reserve(
+                        self._requirements,
+                        wait=self._wait,
+                        wait_timeout_seconds=self._wait_timeout_seconds,
+                    )
+            finally:
+                self._wait_scopes.pop(waiting)
+            if waiting.cancelled_caught:
+                raise ManagerStateError(
+                    "the concurrency controller closed while awaiting admission"
+                )
         self._lease = lease
         scope = anyio.CancelScope()
         self._scope = scope

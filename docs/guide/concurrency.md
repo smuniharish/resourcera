@@ -14,8 +14,9 @@ Two `ResourceManager` methods make up the API:
 - `recommend_concurrency(requirements, *, min_concurrency=1, max_concurrency=None)`
   returns a one-off `ConcurrencyRecommendation`.
 - `adaptive_concurrency(requirements, *, min_concurrency=1, max_concurrency=None,
-  max_waiters=None, wait_timeout_seconds=None)` is an async context manager that
-  yields a `ConcurrencyController`.
+  max_waiters=None, wait_timeout_seconds=..., admission_wait_timeout_seconds=...)`
+  is an async context manager that yields a `ConcurrencyController`. Omitted
+  timeouts use configuration; explicit `None` waits indefinitely.
 
 `max_concurrency` defaults to `ResourceConfig.max_concurrency`. A recommendation
 or limit never leaves the `[min_concurrency, max_concurrency]` range.
@@ -103,10 +104,10 @@ You can also call `await controller.adjust()` yourself.
 
 The controller adjusts within the configured bounds:
 
-- **Initial limit.** The first evaluation sets the limit directly. If capacity is
-  not yet measurable, the limit stays at the minimum. The first measurable
-  estimate then *calibrates* the limit directly instead of probing upward one step
-  at a time.
+- **Initial limit.** The first reliable evaluation sets the limit directly. If
+  capacity is unknown, the snapshot is too old, or monitoring is degraded, the
+  limit stays at the minimum. The first reliable estimate then *calibrates* the
+  limit directly instead of probing upward one step at a time.
 - **Decreases.** These are immediate. When the target falls below the active
   count, admitted work keeps running, and new slots wait until active work drains
   below the limit. RESOURCERA never cancels work merely because a limit falls.
@@ -116,7 +117,8 @@ The controller adjusts within the configured bounds:
   unlimited. Admission rejects work that needs an unmeasurable dimension, so slots
   fail with `AdmissionRejectedError` until the measurement is usable.
 - **Overload feedback.** `controller.signal_overload(reason)` halves the limit
-  immediately, for example after timeouts or HTTP 429 responses.
+  immediately when the application observes local resource overload. For remote
+  service feedback, use a separate [remote controller](remote-concurrency.md).
 
 If capacity collapses while work runs, the limit can remain at the active count
 and decrease as work finishes. Use `signal_overload` if you need to reduce the
@@ -127,11 +129,21 @@ limit below the active count sooner.
 - At most `max_waiters` tasks wait for a permit; it defaults to
   `ResourceConfig.max_waiters`. Additional callers are rejected with
   `AdmissionRejectedError`. Waiters are served in FIFO order.
-- `wait_timeout_seconds` bounds the wait for a permit. Admission also waits up to
-  `admission_wait_timeout_seconds` for the lease.
+- `controller.state.pending_count` counts permit waiters;
+  `admission_waiter_count` counts controller operations awaiting admission, and
+  `total_pending_count` sums the two without double counting. Admission attempts
+  include those currently being evaluated, not only those in the manager's queue.
+  Use `manager.admission_state()` for the separate manager-wide queue.
+- `wait_timeout_seconds` bounds the permit wait, while
+  `admission_wait_timeout_seconds` independently bounds the subsequent lease wait.
+  Omitting either uses its `ResourceConfig` default: indefinitely for permits
+  (`concurrency_wait_timeout_seconds=None`) and five seconds for admission.
+  Passing `None` explicitly waits indefinitely at that stage; positive finite
+  values set a deadline. Zero, negative and non-finite values are invalid.
+  Both queues remain bounded even when waits are indefinite.
 - Cancelling a waiter leaves no permit or lease behind.
 - Leaving the `adaptive_concurrency` block closes the controller. Pending waiters
-  receive `ManagerStateError`, and running slots finish normally.
+  at either stage receive `ManagerStateError`, and running slots finish normally.
 - Closing the manager cancels admission contexts that are still active. Their
   leases are released, and the controller closes.
 - A lost lease cancels its slot and raises `ReservationError`.
@@ -204,7 +216,8 @@ it has no HTTP-client integration. Instead:
 - derive the per-operation requirement from your own estimate, for example
   `bytes_per_operation / expected_seconds`;
 - keep the connection-pool or API rate limit as `max_concurrency`;
-- feed back remote signals with `signal_overload`.
+- feed remote service signals to a separate
+  [remote controller](remote-concurrency.md).
 
 ```python
 config = ResourceConfig(network_capacity_bytes_per_second=125_000_000)

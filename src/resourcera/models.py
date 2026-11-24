@@ -371,6 +371,22 @@ class AdmissionDecision(FrozenModel):
     lease_id: str | None = None
 
 
+class AdmissionState(FrozenModel):
+    """Local admission queue and owned reservation counters."""
+
+    queue_capacity: int = Field(ge=1)
+    queue_depth: int = Field(ge=0)
+    available_queue_slots: int = Field(ge=0)
+    oldest_wait_seconds: float | None = Field(default=None, ge=0)
+    priority_distribution: tuple[tuple[int, int], ...] = ()
+    active_reservations: int = Field(ge=0)
+    rejected_count: int = Field(ge=0)
+    timeout_count: int = Field(ge=0)
+    cancelled_waiter_count: int = Field(ge=0)
+    completed_wait_count: int = Field(ge=0)
+    total_wait_seconds: float = Field(ge=0)
+
+
 class ResourceLease(FrozenModel):
     """A logical reservation owned by one resource manager."""
 
@@ -445,6 +461,15 @@ class ConcurrencyState(FrozenModel):
     max_concurrency: int = Field(ge=1)
     active_count: int = Field(ge=0)
     pending_count: int = Field(ge=0)
+    admission_waiter_count: int = Field(default=0, ge=0)
+    total_pending_count: int = Field(default=0, ge=0)
+    permit_queue_capacity: int = Field(default=1, ge=1)
+    available_permit_queue_slots: int = Field(default=0, ge=0)
+    oldest_permit_wait_seconds: float | None = Field(default=None, ge=0)
+    oldest_admission_wait_seconds: float | None = Field(default=None, ge=0)
+    rejected_count: int = Field(default=0, ge=0)
+    timeout_count: int = Field(default=0, ge=0)
+    cancelled_waiter_count: int = Field(default=0, ge=0)
     available_permits: int = Field(ge=0)
     last_evaluated_at: datetime | None
     last_adjusted_at: datetime | None

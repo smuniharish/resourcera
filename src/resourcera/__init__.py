@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from resourcera.models import (
         AcceleratorDevice,
         AdmissionDecision,
+        AdmissionState,
         CapacityResult,
         ConcurrencyAdjustment,
         ConcurrencyRecommendation,
@@ -36,10 +37,18 @@ if TYPE_CHECKING:
         WorkloadProfile,
         WorkloadRequirements,
     )
+    from resourcera.remote import (
+        RemoteAdjustment,
+        RemoteConcurrencyController,
+        RemoteConcurrencyRejectedError,
+        RemoteConcurrencyState,
+        RemoteSlot,
+    )
 
 _EXPORTS = {
     "AcceleratorDevice": "models",
     "AdmissionDecision": "models",
+    "AdmissionState": "models",
     "AdmissionRejectedError": "exceptions",
     "CapacityResult": "models",
     "ConcurrencyAdjustment": "models",
@@ -56,6 +65,11 @@ _EXPORTS = {
     "ProviderError": "exceptions",
     "ProviderInfo": "models",
     "ProviderReport": "accelerators",
+    "RemoteAdjustment": "remote",
+    "RemoteConcurrencyController": "remote",
+    "RemoteConcurrencyRejectedError": "remote",
+    "RemoteConcurrencyState": "remote",
+    "RemoteSlot": "remote",
     "ReservationError": "exceptions",
     "ResourceConfig": "config",
     "ResourceError": "exceptions",
@@ -72,6 +86,7 @@ __all__ = [
     "AcceleratorDevice",
     "AdmissionDecision",
     "AdmissionRejectedError",
+    "AdmissionState",
     "CapacityResult",
     "ConcurrencyAdjustment",
     "ConcurrencyController",
@@ -87,6 +102,11 @@ __all__ = [
     "ProviderError",
     "ProviderInfo",
     "ProviderReport",
+    "RemoteAdjustment",
+    "RemoteConcurrencyController",
+    "RemoteConcurrencyRejectedError",
+    "RemoteConcurrencyState",
+    "RemoteSlot",
     "ReservationError",
     "ResourceConfig",
     "ResourceError",
@@ -109,7 +129,7 @@ def __getattr__(name: str) -> object:
         try:
             value = version("resourcera")
         except PackageNotFoundError:
-            value = "0.2.1"
+            value = "0.3.0"
     elif name in _EXPORTS:
         value = getattr(import_module(f"resourcera.{_EXPORTS[name]}"), name)
     else:

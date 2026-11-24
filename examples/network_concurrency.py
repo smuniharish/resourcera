@@ -46,8 +46,8 @@ async def main() -> None:
             for number in range(10):
                 tasks.start_soon(request, number)
 
-        # Feed back remote signals such as timeouts or HTTP 429 responses.
-        controller.signal_overload("The remote service returned HTTP 429.")
+        # Report local pressure here; remote feedback uses a separate controller.
+        controller.signal_overload("The local network workload is overloaded.")
         print("Limit after overload feedback:", controller.current_limit)
 
 

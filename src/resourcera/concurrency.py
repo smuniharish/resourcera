@@ -204,6 +204,7 @@ class ConcurrencyController:
         maximum: int,
         max_waiters: int,
         wait_timeout_seconds: float | None,
+        admission_wait_timeout_seconds: float | None,
     ) -> None:
         config = manager.config
         self.requirements = requirements
@@ -212,12 +213,17 @@ class ConcurrencyController:
         self._maximum = maximum
         self._max_waiters = max_waiters
         self._wait_timeout = wait_timeout_seconds
+        self._admission_wait_timeout = admission_wait_timeout_seconds
         self._interval = config.concurrency_adjustment_interval_seconds
         self._step = config.concurrency_increase_step
         self._history: deque[ConcurrencyAdjustment] = deque(maxlen=config.concurrency_history_size)
         self._limiter = anyio.CapacityLimiter(minimum)
         self._adjusting = anyio.Lock()
-        self._waiting: set[anyio.CancelScope] = set()
+        self._waiting: dict[anyio.CancelScope, float] = {}
+        self._admission_waiting: dict[anyio.CancelScope, float] = {}
+        self._rejected_count = 0
+        self._timeout_count = 0
+        self._cancelled_waiter_count = 0
         self._clock: Callable[[], float] = time.monotonic
         self._active = 0
         self._leased = 0
@@ -250,6 +256,21 @@ class ConcurrencyController:
             max_concurrency=self._maximum,
             active_count=self._active,
             pending_count=len(self._waiting),
+            admission_waiter_count=len(self._admission_waiting),
+            total_pending_count=len(self._waiting) + len(self._admission_waiting),
+            permit_queue_capacity=self._max_waiters,
+            available_permit_queue_slots=self._max_waiters - len(self._waiting),
+            oldest_permit_wait_seconds=(
+                max(0.0, time.monotonic() - min(self._waiting.values())) if self._waiting else None
+            ),
+            oldest_admission_wait_seconds=(
+                max(0.0, time.monotonic() - min(self._admission_waiting.values()))
+                if self._admission_waiting
+                else None
+            ),
+            rejected_count=self._rejected_count,
+            timeout_count=self._timeout_count,
+            cancelled_waiter_count=self._cancelled_waiter_count,
             available_permits=max(0, self.current_limit - self._limiter.borrowed_tokens),
             last_evaluated_at=self._last_evaluated_at,
             last_adjusted_at=self._last_adjusted_at,
@@ -333,7 +354,23 @@ class ConcurrencyController:
         if initial:
             # Until capacity is first measurable the limit stays at the minimum; the first
             # usable estimate then sets the limit directly instead of probing upward.
-            self._calibrated = recommendation.capacity_known
+            reliable = (
+                recommendation.capacity_known
+                and recommendation.confidence > 0
+                and not degraded
+                and recommendation.capacity.snapshot_age_seconds
+                <= max(self._interval, self._manager.config.cpu_memory_interval_seconds) * 3
+            )
+            if not reliable:
+                self._calibrated = False
+                self._smoothed = float(current)
+                if self._last_change is None:
+                    self._last_change = now
+                self._reason = (
+                    f"Waiting for reliable capacity at {current}: {recommendation.reason}"
+                )
+                return
+            self._calibrated = True
             self._smoothed = float(target)
             if self._last_change is None:
                 label = "Initial limit"
@@ -390,7 +427,7 @@ class ConcurrencyController:
         self._set_limit(limit, f"Decreased multiplicatively: {reason}", self._recommendation)
         self._last_change = self._clock()
 
-    def _rejection(self, reason: str) -> AdmissionRejectedError:
+    def _rejection(self, reason: str, *, timed_out: bool = False) -> AdmissionRejectedError:
         if self._recommendation is None:
             raise ManagerStateError("the concurrency controller was not started")
         return AdmissionRejectedError(
@@ -400,7 +437,8 @@ class ConcurrencyController:
                 capacity=self._recommendation.capacity,
                 policy=_POLICY,
                 reason=reason,
-            )
+            ),
+            timed_out=timed_out,
         )
 
     async def _acquire(self, token: object) -> None:
@@ -412,9 +450,10 @@ class ConcurrencyController:
         except anyio.WouldBlock:
             pass
         if len(self._waiting) >= self._max_waiters:
+            self._rejected_count += 1
             raise self._rejection("The controller's bounded waiter queue is full.")
         scope = anyio.CancelScope()
-        self._waiting.add(scope)
+        self._waiting[scope] = time.monotonic()
         try:
             with scope:
                 if self._wait_timeout is None:
@@ -423,10 +462,18 @@ class ConcurrencyController:
                     with anyio.move_on_after(self._wait_timeout) as timeout:
                         await self._limiter.acquire_on_behalf_of(token)
                     if timeout.cancelled_caught:
-                        raise self._rejection("Waiting for a concurrency slot timed out.")
+                        self._rejected_count += 1
+                        self._timeout_count += 1
+                        raise self._rejection(
+                            "Waiting for a concurrency slot timed out.", timed_out=True
+                        )
+        except anyio.get_cancelled_exc_class():
+            self._cancelled_waiter_count += 1
+            raise
         finally:
-            self._waiting.discard(scope)
+            self._waiting.pop(scope)
         if scope.cancelled_caught:
+            self._cancelled_waiter_count += 1
             raise ManagerStateError("the concurrency controller closed while waiting")
 
     def slot(self) -> ConcurrencySlot:
@@ -448,7 +495,7 @@ class ConcurrencyController:
 
     def _close(self) -> None:
         self._closed = True
-        for scope in tuple(self._waiting):
+        for scope in (*self._waiting, *self._admission_waiting):
             scope.cancel()
 
     async def _run(self) -> None:
@@ -504,10 +551,19 @@ class ConcurrencySlot:
         self._token = token
         try:
             admission = controller._manager.admission(
-                controller.requirements, wait=True, wait_timeout_seconds=None
+                controller.requirements,
+                wait=True,
+                wait_timeout_seconds=controller._admission_wait_timeout,
             )
+            admission._wait_scopes = controller._admission_waiting
             decision = await admission.__aenter__()
-        except BaseException:
+        except BaseException as exc:
+            if isinstance(exc, AdmissionRejectedError):
+                controller._rejected_count += 1
+                if exc.timed_out:
+                    controller._timeout_count += 1
+            elif isinstance(exc, (ManagerStateError, anyio.get_cancelled_exc_class())):
+                controller._cancelled_waiter_count += 1
             controller._limiter.release_on_behalf_of(token)
             raise
         self._admission = admission

@@ -23,6 +23,8 @@ models, provider contracts, and exceptions.
 
 ::: resourcera.models.AdmissionDecision
 
+::: resourcera.models.AdmissionState
+
 ::: resourcera.models.ResourceLease
 
 ## Adaptive concurrency
@@ -36,6 +38,16 @@ models, provider contracts, and exceptions.
 ::: resourcera.models.ConcurrencyState
 
 ::: resourcera.models.ConcurrencyAdjustment
+
+## Remote concurrency
+
+::: resourcera.remote.RemoteConcurrencyController
+
+::: resourcera.remote.RemoteConcurrencyState
+
+::: resourcera.remote.RemoteAdjustment
+
+::: resourcera.remote.RemoteConcurrencyRejectedError
 
 ## Provider contracts
 

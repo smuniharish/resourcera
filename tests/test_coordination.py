@@ -75,6 +75,60 @@ def test_process_local_concurrent_acquisition_is_atomic(snapshot: ResourceSnapsh
     assert store.release(owner, leases) == frozenset(leases)
 
 
+@pytest.mark.parametrize("sqlite", [False, True])
+def test_lease_ownership_and_failed_batch_are_atomic(
+    snapshot: ResourceSnapshot, tmp_path: Path, sqlite: bool
+) -> None:
+    config = ResourceConfig(
+        max_concurrency=2,
+        coordination_database=tmp_path / "ownership.sqlite" if sqlite else None,
+    )
+    store = ReservationStore(config)
+    store.initialize()
+    request = WorkloadRequirements(memory="100MB")
+    owner_a, owner_b = str(uuid4()), str(uuid4())
+    lease_a, lease_b = str(uuid4()), str(uuid4())
+    for owner, lease_id in ((owner_a, lease_a), (owner_b, lease_b)):
+        decision, lease, created = store.acquire(snapshot, request, owner, lease_id)
+        assert decision.accepted and lease is not None and created
+    try:
+        _, _, created = store.acquire(snapshot, request, owner_a, lease_a)
+        assert not created
+        with pytest.raises(ReservationError, match="different reservation"):
+            store.acquire(snapshot, request, owner_b, lease_a)
+        with pytest.raises(ReservationError, match="another owner's lease"):
+            store.release(owner_a, (lease_a, lease_b))
+        with pytest.raises(ReservationError, match="another owner's lease"):
+            store.renew(owner_a, (lease_a, lease_b))
+        assert store.capacity(snapshot, request).max_concurrency == 0
+        assert set(store.renew(owner_a, (lease_a,))) == {lease_a}
+        assert store.release(owner_a, (lease_a,)) == frozenset({lease_a})
+        assert store.release(owner_a, (lease_a,)) == frozenset()
+    finally:
+        store.release(owner_a, (lease_a,))
+        store.release(owner_b, (lease_b,))
+
+
+def test_sqlite_lock_failure_preserves_existing_lease(
+    snapshot: ResourceSnapshot, tmp_path: Path
+) -> None:
+    path = tmp_path / "locked.sqlite"
+    store = ReservationStore(config_for(path))
+    store.initialize()
+    request = WorkloadRequirements(memory="100MB")
+    decision, lease, _ = store.acquire(snapshot, request, "owner", "lease")
+    assert decision.accepted and lease is not None
+    try:
+        with closing(sqlite3.connect(path, isolation_level=None)) as connection:
+            connection.execute("BEGIN EXCLUSIVE")
+            with pytest.raises(ReservationError, match="SQLite coordination failed"):
+                store.release("owner", ("lease",))
+            connection.execute("ROLLBACK")
+        assert store.capacity(snapshot, request).max_concurrency == 0
+    finally:
+        store.release("owner", ("lease",))
+
+
 def test_accelerator_uuid_prevents_duplicate_devices_and_alias_reuse(
     snapshot: ResourceSnapshot,
 ) -> None:

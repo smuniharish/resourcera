@@ -18,6 +18,8 @@ uv run python examples/resource_admission.py
 | `hybrid_sampling.py`, `strict_overhead.py` | Sampling and overhead feedback |
 | `capacity_estimation.py`, `workload_requirements.py` | Estimates and explicit profiles |
 | `resource_admission.py`, `adaptive_concurrency.py` | Admission and bounded work |
+| `bounded_producer.py` | Producer backpressure with a bounded AnyIO stream |
+| `remote_feedback.py` | Independent feedback controllers for simulated endpoints |
 | `threadpool_workers.py` | Sizing a `ThreadPoolExecutor` and bounding its submissions |
 | `adaptive_asyncio.py`, `adaptive_anyio.py` | Replacing fixed semaphores and capacity limiters |
 | `network_concurrency.py` | Network-bound limits and overload feedback |

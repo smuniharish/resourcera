@@ -41,7 +41,7 @@ and your agent's skill directory before use.
 
 For applications using refresh-engine directly, its maintainers publish the
 `refresh-engine` skill for application integration and `refresh-engine-extend`
-for custom integrations and stores. They target refresh-engine 1.0.0 and
+for custom integrations and stores. They target refresh-engine 1.1.0 and
 Python 3.12 or newer; OpenTelemetry support is optional:
 
 ```shell

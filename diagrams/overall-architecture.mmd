@@ -2,6 +2,11 @@ flowchart LR
     app["Python application"] --> api["ResourceManager"]
     api --> snapshots["Cached snapshots"]
     api --> capacity["Capacity and admission"]
+    api --> controller["Local concurrency controller"]
+    controller --> capacity
+    app --> remote["Remote feedback controller"]
+    remote --> endpoint["Remote endpoint"]
+    endpoint -. "Application-reported feedback" .-> remote
     snapshots --> capacity
     telemetry["psutil and OS telemetry"] --> snapshots
     inventory["refresh-engine inventory"] --> accelerators["Accelerator discovery"]

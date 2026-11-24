@@ -35,6 +35,7 @@ class ReservationError(ResourceError):
 class AdmissionRejectedError(ResourceError):
     """A resource-aware admission request was rejected."""
 
-    def __init__(self, decision: AdmissionDecision) -> None:
+    def __init__(self, decision: AdmissionDecision, *, timed_out: bool = False) -> None:
         super().__init__(decision.reason)
         self.decision = decision
+        self.timed_out = timed_out

@@ -32,5 +32,10 @@ Adaptive concurrency controllers re-evaluate capacity every
 `concurrency_history_size` adjustments (default 32). See
 [Adaptive concurrency](../guide/concurrency.md).
 
+`admission_wait_timeout_seconds` defaults to 5 seconds and
+`concurrency_wait_timeout_seconds` defaults to `None` (no permit deadline).
+Either can be configured as `None` for indefinite waits. Queue sizes are still
+bounded. See [Admission](../guide/admission.md) for per-call overrides.
+
 See the [API reference](../api/index.md) and
 [coordination guide](../guide/coordination.md).

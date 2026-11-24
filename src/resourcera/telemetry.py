@@ -35,7 +35,7 @@ class _Reading[T]:
     detail: str | None = None
 
 
-def _read[T](call: Callable[[], T]) -> _Reading[T]:
+def _read[T](call: Callable[[], T | None]) -> _Reading[T]:
     try:
         value = call()
     except NotImplementedError as exc:
@@ -229,6 +229,9 @@ class SystemSampler:
         self._io_warnings: tuple[str, ...] = ()
         self._frequency: Metric[float] | None = None
         self._uss: Metric[int] | None = None
+        self._swap_total: Metric[int] | None = None
+        self._swap_used: Metric[int] | None = None
+        self._next_windows_swap: float | None = None
 
     @property
     def retained_objects(self) -> tuple[object, ...]:
@@ -245,6 +248,8 @@ class SystemSampler:
             self._connections,
             self._frequency,
             self._uss,
+            self._swap_total,
+            self._swap_used,
         )
 
     def shed_optional(self) -> None:
@@ -265,6 +270,7 @@ class SystemSampler:
         freshness = self._config.cpu_memory_interval_seconds * 2
         io_freshness = self._config.disk_network_interval_seconds * 2
         do_io = sample_io or self._disk is None
+        first_sample = self._previous_time is None
         limits = read_cgroup()
 
         cpu_total = _read(lambda: dict(psutil.cpu_times()._asdict()))
@@ -490,7 +496,54 @@ class SystemSampler:
         )
 
         virtual = _read(psutil.virtual_memory)
-        swap = _read(psutil.swap_memory)
+        windows_swap_interval = max(
+            self._config.disk_network_interval_seconds, self._config.cpu_budget_window_seconds
+        )
+        if sys.platform == "win32" and first_sample:
+            self._next_windows_swap = clock.monotonic + windows_swap_interval
+        windows_swap_due = (
+            sample_io
+            and not first_sample
+            and (self._next_windows_swap is None or clock.monotonic >= self._next_windows_swap)
+        )
+        if sys.platform != "win32" or windows_swap_due:
+            swap = _read(psutil.swap_memory)
+            swap_freshness = windows_swap_interval * 2 if sys.platform == "win32" else freshness
+            if sys.platform == "win32":
+                self._next_windows_swap = clock.monotonic + windows_swap_interval
+            self._swap_total = metric(
+                swap.value.total if swap.value else None,
+                "bytes",
+                "psutil.swap_memory",
+                Scope.MACHINE,
+                clock,
+                swap_freshness,
+                status=swap.status,
+                detail=swap.detail,
+            )
+            self._swap_used = metric(
+                swap.value.used if swap.value else None,
+                "bytes",
+                "psutil.swap_memory",
+                Scope.MACHINE,
+                clock,
+                swap_freshness,
+                status=swap.status,
+                detail=swap.detail,
+            )
+        elif self._swap_total is None:
+            self._swap_total = metric(
+                None,
+                "bytes",
+                "psutil.swap_memory",
+                Scope.MACHINE,
+                clock,
+                windows_swap_interval * 2,
+                detail="Windows swap sampling is deferred for at least one CPU-budget window.",
+            )
+            self._swap_used = self._swap_total
+        assert self._swap_total is not None
+        assert self._swap_used is not None
         process_memory = _read(self._process.memory_info)
         if do_io or self._uss is None:
             process_full = _read(self._process.memory_full_info)
@@ -583,26 +636,8 @@ class SystemSampler:
                 ),
             ),
             process_uss_bytes=self._uss,
-            swap_total_bytes=metric(
-                swap.value.total if swap.value else None,
-                "bytes",
-                "psutil.swap_memory",
-                Scope.MACHINE,
-                clock,
-                freshness,
-                status=swap.status,
-                detail=swap.detail,
-            ),
-            swap_used_bytes=metric(
-                swap.value.used if swap.value else None,
-                "bytes",
-                "psutil.swap_memory",
-                Scope.MACHINE,
-                clock,
-                freshness,
-                status=swap.status,
-                detail=swap.detail,
-            ),
+            swap_total_bytes=self._swap_total,
+            swap_used_bytes=self._swap_used,
             cgroup_limit_bytes=metric(
                 memory_limit,
                 "bytes",

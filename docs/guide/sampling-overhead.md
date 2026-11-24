@@ -4,6 +4,9 @@ CPU and memory are periodically sampled; disk/network rates use a slower interva
 inventory is refreshed through refresh-engine. Linux link-change events can trigger
 inventory refresh when the netlink interface is available; other situations use
 polling. Accelerator detail can also be requested on demand.
+On Windows, swap is deferred for at least one CPU-budget window and sampled no
+more often than once per window on slow samples. It remains unavailable until
+measured and is cached with its original timestamp between probes.
 
 The overhead controller measures attributable sampler, control, coordination, and
 completed provider CPU time over a rolling window, plus estimated retained managed

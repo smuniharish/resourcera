@@ -27,6 +27,7 @@ nav = [
     { "Workloads and capacity" = "guide/capacity.md" },
     { "Admission and concurrency" = "guide/admission.md" },
     { "Adaptive concurrency" = "guide/concurrency.md" },
+    { "Remote service concurrency" = "guide/remote-concurrency.md" },
     { "Reservations and coordination" = "guide/coordination.md" },
     { "Custom providers" = "guide/custom-providers.md" },
     { "Troubleshooting" = "guide/troubleshooting.md" },

@@ -18,6 +18,7 @@ from resourcera.coordination import ReservationStore
 from resourcera.exceptions import AdmissionRejectedError, ManagerStateError, ReservationError
 from resourcera.models import (
     AdmissionDecision,
+    AdmissionState,
     CapacityResult,
     ResourceLease,
     ResourceSnapshot,
@@ -41,6 +42,7 @@ class _Owned:
 class _Waiter:
     priority: int
     sequence: int
+    started: float
 
 
 class AdmissionCoordinator:
@@ -68,6 +70,11 @@ class AdmissionCoordinator:
         self._sequence = 0
         self._changed = anyio.Event()
         self._closing = False
+        self._rejected_count = 0
+        self._timeout_count = 0
+        self._cancelled_waiter_count = 0
+        self._completed_wait_count = 0
+        self._total_wait_seconds = 0.0
 
     @property
     def retained_objects(self) -> tuple[object, ...]:
@@ -119,6 +126,35 @@ class AdmissionCoordinator:
         """Include all active reservations in the current capacity estimate."""
         snapshot = self._snapshot()
         return await self._call(lambda: self._store.capacity(snapshot, requirements))
+
+    async def state(self) -> AdmissionState:
+        """Snapshot this manager's queue and owned leases without sampling resources."""
+        async with self._lock:
+            now = time.monotonic()
+            priorities: dict[int, int] = {}
+            for waiter in self._waiters:
+                priorities[waiter.priority] = priorities.get(waiter.priority, 0) + 1
+            return AdmissionState(
+                queue_capacity=self.config.max_waiters,
+                queue_depth=len(self._waiters),
+                available_queue_slots=self.config.max_waiters - len(self._waiters),
+                oldest_wait_seconds=(
+                    max(0.0, now - min(waiter.started for waiter in self._waiters))
+                    if self._waiters
+                    else None
+                ),
+                priority_distribution=tuple(sorted(priorities.items(), reverse=True)),
+                active_reservations=len(self._owned),
+                rejected_count=self._rejected_count,
+                timeout_count=self._timeout_count,
+                cancelled_waiter_count=self._cancelled_waiter_count,
+                completed_wait_count=self._completed_wait_count,
+                total_wait_seconds=self._total_wait_seconds,
+            )
+
+    def _record_wait(self, waiter: _Waiter) -> None:
+        self._completed_wait_count += 1
+        self._total_wait_seconds += max(0.0, time.monotonic() - waiter.started)
 
     async def _rejected(self, requirements: WorkloadRequirements, reason: str) -> AdmissionDecision:
         capacity = await self.capacity(requirements)
@@ -198,7 +234,7 @@ class AdmissionCoordinator:
         *,
         lease_id: str | None,
         wait: bool,
-        wait_timeout_seconds: float,
+        wait_timeout_seconds: float | None,
         auto_renew: bool,
         attempt_id: str,
         delivery: threading.Event,
@@ -207,40 +243,39 @@ class AdmissionCoordinator:
         lease_id = str(uuid4()) if lease_id is None else lease_id
         if not _LEASE_ID.fullmatch(lease_id):
             raise ValueError("lease_id must contain 1-128 ASCII letters, digits, '.', '_' or '-'")
-        if wait_timeout_seconds <= 0 or not wait_timeout_seconds < float("inf"):
+        if wait_timeout_seconds is not None and not 0 < wait_timeout_seconds < float("inf"):
             raise ValueError("admission timeout must be finite and positive")
-        deadline = time.monotonic() + wait_timeout_seconds
+        deadline = None if wait_timeout_seconds is None else time.monotonic() + wait_timeout_seconds
         waiter: _Waiter | None = None
         lease: ResourceLease | None = None
         decision: AdmissionDecision | None = None
+        timed_out = False
         try:
             if wait:
-                async with self._lock:
-                    if self._closing:
-                        raise ManagerStateError("the resource manager is closing")
-                    if len(self._waiters) >= self.config.max_waiters:
-                        raise AdmissionRejectedError(
-                            await self._rejected(
-                                requirements, "The bounded admission queue is full."
-                            )
-                        )
-                    self._sequence += 1
-                    waiter = _Waiter(requirements.priority, self._sequence)
-                    self._waiters.append(waiter)
-                    self._waiters.sort(key=lambda item: (-item.priority, item.sequence))
-                    self._notify()
+                if self._closing:
+                    raise ManagerStateError("the resource manager is closing")
+                if len(self._waiters) >= self.config.max_waiters:
+                    raise AdmissionRejectedError(
+                        await self._rejected(requirements, "The bounded admission queue is full.")
+                    )
+                self._sequence += 1
+                waiter = _Waiter(requirements.priority, self._sequence, time.monotonic())
+                self._waiters.append(waiter)
+                self._waiters.sort(key=lambda item: (-item.priority, item.sequence))
+                self._notify()
             while True:
                 async with self._lock:
                     if self._closing:
                         raise ManagerStateError("the resource manager is closing")
-                    if waiter is not None and time.monotonic() >= deadline:
+                    if waiter is not None and deadline is not None and time.monotonic() >= deadline:
+                        timed_out = True
                         if decision is None:
                             decision = await self._rejected(requirements, "Admission timed out.")
                         else:
                             decision = decision.model_copy(
                                 update={"reason": f"Admission timed out: {decision.reason}"}
                             )
-                        raise AdmissionRejectedError(decision)
+                        raise AdmissionRejectedError(decision, timed_out=True)
                     is_head = waiter is not None and self._waiters[0] is waiter
                     if waiter is None and self._waiters:
                         decision = await self._rejected(
@@ -251,7 +286,12 @@ class AdmissionCoordinator:
                             requirements, lease_id, auto_renew, attempt_id, delivery
                         )
                         if lease is not None:
-                            if waiter is not None and time.monotonic() >= deadline:
+                            if (
+                                waiter is not None
+                                and deadline is not None
+                                and time.monotonic() >= deadline
+                            ):
+                                timed_out = True
                                 decision = decision.model_copy(
                                     update={
                                         "accepted": False,
@@ -261,9 +301,10 @@ class AdmissionCoordinator:
                                         ),
                                     }
                                 )
-                                raise AdmissionRejectedError(decision)
+                                raise AdmissionRejectedError(decision, timed_out=True)
                             if waiter is not None:
                                 self._waiters.remove(waiter)
+                                self._record_wait(waiter)
                                 waiter = None
                                 self._notify()
                             break
@@ -272,22 +313,32 @@ class AdmissionCoordinator:
                     if decision is None:
                         raise RuntimeError("an immediate admission decision was not produced")
                     raise AdmissionRejectedError(decision)
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    timed_out = True
                     if decision is None:
                         decision = await self._rejected(requirements, "Admission timed out.")
                     else:
                         decision = decision.model_copy(
                             update={"reason": f"Admission timed out: {decision.reason}"}
                         )
-                    raise AdmissionRejectedError(decision)
-                with anyio.move_on_after(min(remaining, 0.25) if is_head else remaining):
+                    raise AdmissionRejectedError(decision, timed_out=True)
+                delay = min(remaining, 0.25) if is_head and remaining is not None else remaining
+                if is_head and remaining is None:
+                    delay = 0.25
+                with anyio.move_on_after(delay):
                     await changed.wait()
             await anyio.lowlevel.checkpoint_if_cancelled()
             if lease is None:
                 raise RuntimeError("an accepted admission did not create a lease")
             return lease
-        except BaseException:
+        except BaseException as exc:
+            if isinstance(exc, AdmissionRejectedError):
+                self._rejected_count += 1
+                if timed_out:
+                    self._timeout_count += 1
+            elif waiter is not None and isinstance(exc, anyio.get_cancelled_exc_class()):
+                self._cancelled_waiter_count += 1
             if lease is not None:
                 with anyio.CancelScope(shield=True):
                     try:
@@ -301,6 +352,7 @@ class AdmissionCoordinator:
                     async with self._lock:
                         if waiter in self._waiters:
                             self._waiters.remove(waiter)
+                            self._record_wait(waiter)
                             self._notify()
 
     async def compensate(self, lease_id: str, attempt_id: str) -> None:
