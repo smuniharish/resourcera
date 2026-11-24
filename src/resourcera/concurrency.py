@@ -30,7 +30,7 @@ from resourcera.models import (
     ResourceSnapshot,
     WorkloadRequirements,
 )
-from resourcera.remote import _ThreadOwner
+from resourcera.remote import _LoopOwner
 
 if TYPE_CHECKING:
     from resourcera.manager import ResourceManager, _AdmissionContext
@@ -238,7 +238,7 @@ class ConcurrencyController:
         self._reason = "The controller has not evaluated capacity yet."
         self._calibrated = False
         self._closed = False
-        self._owner = _ThreadOwner()
+        self._owner = _LoopOwner()
 
     @property
     def current_limit(self) -> int:
@@ -250,7 +250,8 @@ class ConcurrencyController:
     def state(self) -> ConcurrencyState:
         """Return an immutable view of the controller; no measurement is performed.
 
-        Read it from the owning thread; other threads raise ``RuntimeError`` once bound.
+        Read it from the owning event loop; once the controller is bound, other loops and
+        threads (and any caller after that loop ends) raise ``RuntimeError``.
         """
         self._owner.check_read()
         recommendation = self._recommendation
@@ -429,7 +430,8 @@ class ConcurrencyController:
     def signal_overload(self, reason: str = "The application reported overload.") -> None:
         """Halve the limit immediately after external feedback such as timeouts or HTTP 429.
 
-        Call it from the controller's event-loop thread; other threads raise ``RuntimeError``.
+        Call it from the controller's owning event loop; other loops and threads raise
+        ``RuntimeError``.
         """
         self._owner.check()
         if self._closed or self._recommendation is None:

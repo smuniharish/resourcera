@@ -49,6 +49,11 @@
   a controller is bound.
 - Make lazy owner binding atomic so concurrent first use from several threads
   binds exactly one owner.
+- Bind controllers to their event loop, not just its thread: a later event loop
+  on the same thread, a call made outside any loop, or any use after the owning
+  loop has ended now raises `RuntimeError` instead of being accepted because the
+  thread matched. Ownership never rebinds, and closing a manager after a
+  controller's loop ended completes without error.
 - Closing a manager from a non-owner thread now marks its controllers closed
   immediately and cancels their waiters on the owning event loop instead of
   cancelling AnyIO scopes from the closing thread.

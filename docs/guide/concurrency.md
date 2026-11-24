@@ -121,13 +121,15 @@ The controller adjusts within the configured bounds:
   service feedback, use a separate [remote controller](remote-concurrency.md).
   Call it from the controller's event-loop thread; other threads raise
   `RuntimeError` and should use `anyio.from_thread.run_sync`.
-- **Thread ownership.** A controller binds atomically to one event-loop thread
-  (its creation thread, or the first thread that uses it inside an event loop).
-  `adjust()`, `signal_overload()`, entering and leaving slots, leaving the
-  controller context, and reading `state` or `current_limit` are owner-only;
-  other threads get `RuntimeError` and nothing changes. Reads are allowed from any
-  thread before binding. Closing the manager from another thread marks the
-  controller closed immediately and wakes its waiters on the owning loop.
+- **Event-loop ownership.** A controller binds atomically to one event loop (the
+  loop running at creation, or the first loop that uses it); a later loop on the
+  same thread is a different owner. `adjust()`, `signal_overload()`, entering and
+  leaving slots, leaving the controller context, and reading `state` or
+  `current_limit` are owner-only; other threads or loops, and any caller after
+  the owning loop ends, get `RuntimeError` and nothing changes. Reads are allowed
+  from anywhere before binding. Closing the manager from another thread or loop
+  marks the controller closed immediately and wakes its waiters on the owning
+  loop, if that loop is still running.
 
 If capacity collapses while work runs, the limit can remain at the active count
 and decrease as work finishes. Use `signal_overload` if you need to reduce the

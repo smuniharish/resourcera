@@ -22,8 +22,9 @@ from resourcera.exceptions import ManagerStateError, ResourceError
 from resourcera.models import FrozenModel
 
 _OWNER_ERROR = (
-    "controllers must be used from the thread running their event loop; "
-    "from a worker thread, call anyio.from_thread.run_sync(...) instead"
+    "controllers must be used from the event loop that owns them, on the thread running it; "
+    "another or ended event loop cannot use them. From a worker thread, call "
+    "anyio.from_thread.run_sync(...) instead"
 )
 
 
@@ -54,14 +55,17 @@ def _require_count(name: str, value: object, minimum: int) -> None:
         )
 
 
-class _ThreadOwner:
-    """Bind a controller's mutable state to the thread running its event loop.
+class _LoopOwner:
+    """Bind a controller's mutable state to one running event loop.
 
-    Construction inside an event loop binds the owner; otherwise the first mutating call made
-    from inside an event loop binds it. Binding happens under a lock, so when threads race to
+    The owner is the AnyIO event loop itself (compared by its native token: the asyncio loop or
+    the Trio run token) together with the thread running it; thread identity alone is never
+    accepted. Construction inside an event loop binds the owner; otherwise the first owner-only
+    call made inside an event loop binds it. Binding happens under a lock, so when loops race to
     first use exactly one becomes the owner and the others are rejected before touching
-    controller state. Ownership never changes afterwards. Worker threads should use
-    ``anyio.from_thread.run_sync``.
+    controller state. Ownership never changes: calls from another loop (even on the same
+    thread), from outside any loop, or after the owning loop has ended are rejected. Worker
+    threads should use ``anyio.from_thread.run_sync``.
     """
 
     __slots__ = ("_lock", "_thread", "_token")
@@ -71,36 +75,42 @@ class _ThreadOwner:
         self._token = _current_token()
         self._thread = None if self._token is None else threading.get_ident()
 
+    def _is_owner(self, token: EventLoopToken | None) -> bool:
+        owner = self._token
+        return (
+            token is not None
+            and owner is not None
+            and token.native_token is owner.native_token
+            and self._thread == threading.get_ident()
+        )
+
     def check(self) -> None:
-        """Allow only the owning thread, binding the owner on first event-loop use."""
-        thread = threading.get_ident()
-        if self._thread == thread:
-            return
+        """Allow only the owning event loop, binding the owner on first event-loop use."""
         token = _current_token()
-        if token is not None:
+        if token is not None and self._token is None:
             with self._lock:
-                if self._thread is None:
-                    self._thread, self._token = thread, token
-            if self._thread == thread:
-                return
-        raise RuntimeError(_OWNER_ERROR)
+                if self._token is None:
+                    # ``_thread`` is published before ``_token``, which marks the binding.
+                    self._thread = threading.get_ident()
+                    self._token = token
+        if not self._is_owner(token):
+            raise RuntimeError(_OWNER_ERROR)
 
     def check_read(self) -> None:
-        """Allow reads from the owner, or from any thread before binding; never binds."""
-        owner = self._thread
-        if owner is not None and owner != threading.get_ident():
+        """Allow reads from any thread before binding, then only from the owning loop."""
+        if self._token is not None and not self._is_owner(_current_token()):
             raise RuntimeError(_OWNER_ERROR)
 
     def call(self, callback: Callable[[], None]) -> None:
-        """Run ``callback`` now on the owning (or unbound) thread, else on the owning loop."""
+        """Run ``callback`` now when unbound or on the owning loop; else schedule it there."""
         with self._lock:
-            owner, token = self._thread, self._token
-        if owner is None or owner == threading.get_ident():
+            token = self._token
+        if token is None or self._is_owner(_current_token()):
             callback()
-        elif token is not None:
-            # A finished loop has no parked waiters left to wake.
-            with suppress(RuntimeError):
-                _schedule_in_loop(token, callback)
+            return
+        # An ended loop rejects scheduling; it has no parked waiters left to wake.
+        with suppress(RuntimeError):
+            _schedule_in_loop(token, callback)
 
 
 class RemoteConcurrencyRejectedError(ResourceError):
@@ -161,10 +171,11 @@ def _retry_after_seconds(value: str | None) -> float:
 class RemoteConcurrencyController:
     """Limit requests to one endpoint using only application-supplied feedback.
 
-    A controller belongs to the event loop and thread that first use it, and to its
-    process. State reads, feedback, slots, and context entry and exit from another thread
-    raise ``RuntimeError`` without changing state; use ``anyio.from_thread.run_sync`` to
-    report from worker threads. Separate controller instances do not share state, even
+    A controller belongs to its process and to one event loop: the loop running when it was
+    created, otherwise the first loop that uses it. State reads, feedback, slots, and context
+    entry and exit from any other loop or thread, or after the owning loop has ended, raise
+    ``RuntimeError`` without changing state; use ``anyio.from_thread.run_sync`` to report
+    from worker threads. Separate controller instances do not share state, even
     when their keys are equal.
 
     Adaptation uses at most ``max_samples`` recent outcomes no older than
@@ -253,13 +264,14 @@ class RemoteConcurrencyController:
         self._reason = "Initial limit; awaiting remote feedback."
         self._closed = False
         self._entered = False
-        self._owner = _ThreadOwner()
+        self._owner = _LoopOwner()
 
     @property
     def state(self) -> RemoteConcurrencyState:
         """Return a cached operational snapshot without contacting the endpoint.
 
-        Read it from the owning thread; other threads raise ``RuntimeError`` once bound.
+        Read it from the owning event loop; once the controller is bound, other loops and
+        threads (and any caller after that loop ends) raise ``RuntimeError``.
         """
         self._owner.check_read()
         return RemoteConcurrencyState(
@@ -471,8 +483,8 @@ class RemoteConcurrencyController:
             self._waiting.discard(scope)
 
     def _close(self) -> None:
-        # The flag is one atomic store, so a manager closing from another thread rejects
-        # new calls at once; waiter scopes are only ever cancelled on the owning loop.
+        # The flag is one atomic store, so a manager closing from another thread or loop
+        # rejects new calls at once; waiter scopes are only ever cancelled on the owning loop.
         self._closed = True
         self._owner.call(self._cancel_waiters)
 

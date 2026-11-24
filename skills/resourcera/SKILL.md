@@ -84,7 +84,8 @@ anyio.run(main)
   concurrency. Do not mutate `ThreadPoolExecutor` internals.
 - Create one remote controller per endpoint and reuse it; never one per request.
   Every controller operation (feedback, slots, context, `state`) belongs to the
-  controller's event-loop thread; from other threads marshal calls with
+  event loop that owns the controller (not just its thread); create a new
+  controller per event loop, and from other threads marshal calls with
   `anyio.from_thread.run_sync`. Concurrency counts must be real integers.
   Hierarchical reservations are not supported.
 

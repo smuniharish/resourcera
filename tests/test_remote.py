@@ -1,6 +1,7 @@
 import math
 import threading
 from collections.abc import Awaitable, Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
 
@@ -469,6 +470,129 @@ def test_simultaneous_first_use_binds_exactly_one_owner() -> None:
         assert controller._owner._thread == owner
 
 
+def _counters(controller: RemoteConcurrencyController) -> tuple[object, ...]:
+    # Internal counters, read without the ownership check that guards ``state``.
+    return (
+        controller._successes,
+        controller._overloads,
+        controller._failures,
+        len(controller._samples),
+        controller._in_flight,
+        controller._limiter.total_tokens,
+        controller._limiter.borrowed_tokens,
+        controller._authoritative_capacity,
+        controller._entered,
+        controller._closed,
+    )
+
+
+async def _bind_in_this_loop(controller: RemoteConcurrencyController) -> object:
+    async with controller.slot():
+        controller.report_success(latency_seconds=0.1)
+    return anyio.lowlevel.current_token().native_token
+
+
+def _owner_only_calls(controller: RemoteConcurrencyController) -> list[Callable[[], object]]:
+    return [
+        lambda: controller.report_success(latency_seconds=0.1),
+        lambda: controller.report_overload(status_code=503),
+        lambda: controller.report_failure(kind="authentication"),
+        lambda: controller.report_capacity(1),
+        lambda: controller.state,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("first", "later"), [("asyncio", "asyncio"), ("trio", "trio"), ("asyncio", "trio")]
+)
+def test_controller_rejects_other_loops_after_its_loop_ends(first: str, later: str) -> None:
+    controller = RemoteConcurrencyController("endpoint", initial_concurrency=2)
+    owner_loop = anyio.run(_bind_in_this_loop, controller, backend=first)
+    owner_thread = controller._owner._thread
+    assert owner_thread == threading.get_ident()
+    before = _counters(controller)
+
+    async def later_loop() -> None:
+        for call in _owner_only_calls(controller):
+            with pytest.raises(RuntimeError, match="from_thread"):
+                call()
+        with pytest.raises(RuntimeError, match="from_thread"):
+            await controller.slot().__aenter__()
+        with pytest.raises(RuntimeError, match="from_thread"):
+            await controller.__aenter__()
+
+    # Loop B on the same OS thread that ran the (now ended) owning loop A.
+    anyio.run(later_loop, backend=later)
+    # The same thread with no loop running, after loop A ended.
+    for call in _owner_only_calls(controller):
+        with pytest.raises(RuntimeError, match="from_thread"):
+            call()
+    # A different thread running yet another loop.
+    with ThreadPoolExecutor(1) as executor:
+        executor.submit(anyio.run, later_loop, backend=later).result(10)
+
+    assert _counters(controller) == before
+    assert controller._owner._token is not None
+    assert controller._owner._token.native_token is owner_loop
+    assert controller._owner._thread == owner_thread
+
+
+@pytest.mark.parametrize("backend", ["asyncio", "trio"])
+def test_off_loop_controller_binds_permanently_to_its_first_loop(backend: str) -> None:
+    controller = RemoteConcurrencyController("lazy")
+    # Before binding, reads are allowed from anywhere, even outside an event loop.
+    assert controller.state.success_count == 0
+    with ThreadPoolExecutor(1) as executor:
+        assert executor.submit(lambda: controller.state.in_flight).result(10) == 0
+    assert controller._owner._token is None
+
+    owner_loop = anyio.run(_bind_in_this_loop, controller, backend=backend)
+    assert controller._owner._token is not None
+    assert controller._owner._token.native_token is owner_loop
+    assert _counters(controller)[0] == 1
+
+    async def rebind() -> None:
+        controller.report_success(latency_seconds=0.1)
+
+    with pytest.raises(RuntimeError, match="from_thread"):
+        anyio.run(rebind, backend=backend)
+    assert controller._owner._token.native_token is owner_loop
+    assert _counters(controller)[0] == 1
+
+
+@pytest.mark.parametrize("backend", ["asyncio", "trio"])
+def test_manager_close_after_the_owning_loop_ended(backend: str) -> None:
+    manager = ResourceManager()
+    controller = manager.remote_concurrency("endpoint")
+    anyio.run(_bind_in_this_loop, controller, backend=backend)
+
+    # Waking waiters is scheduled onto the ended owning loop, which rejects it quietly.
+    anyio.run(manager.close, backend=backend)
+
+    assert controller._closed
+    assert (controller._in_flight, controller._limiter.borrowed_tokens) == (0, 0)
+    # Reads follow the same contract: after the owning loop ends, state is unavailable.
+    with pytest.raises(RuntimeError, match="from_thread"):
+        controller.state  # noqa: B018 - property access is the operation under test
+
+
+@pytest.mark.anyio
+async def test_feedback_from_loop_callbacks_on_the_owning_loop_is_allowed() -> None:
+    controller = RemoteConcurrencyController("endpoint")
+    async with controller:
+        done = anyio.Event()
+
+        def callback() -> None:
+            controller.report_success(latency_seconds=0.1)
+            done.set()
+
+        # A plain loop callback runs on the owning loop without a task of its own.
+        remote_module._schedule_in_loop(anyio.lowlevel.current_token(), callback)
+        with anyio.fail_after(5):
+            await done.wait()
+        assert controller.state.success_count == 1
+
+
 @pytest.mark.anyio
 async def test_concurrent_feedback_from_many_tasks_is_consistent() -> None:
     async with RemoteConcurrencyController(
@@ -743,28 +867,30 @@ async def test_capacity_drop_while_requests_are_active_drains_before_admitting()
     )
 )
 def test_feedback_sequences_keep_the_limit_within_bounds(operations: list[tuple]) -> None:
-    controller = RemoteConcurrencyController(
-        "property", min_concurrency=2, initial_concurrency=3, max_concurrency=10
-    )
-    controller._owner._thread = threading.get_ident()
-    now = fake_clock(controller)
-    for name, value in operations:
-        if name == "success":
-            controller.report_success(latency_seconds=value)
-        elif name == "overload":
-            controller.report_overload(status_code=value)
-        elif name == "failure":
-            controller.report_failure(kind=value)
-        elif name == "capacity":
-            controller.report_capacity(value)
-        else:
-            now[0] += value
-        state = controller.state
-        assert 2 <= state.current_limit <= 10
-        if state.authoritative_capacity is not None:
-            assert state.current_limit <= state.authoritative_capacity
-        for change in state.history:
-            assert change.new_limit != change.previous_limit
+    async def apply() -> None:
+        controller = RemoteConcurrencyController(
+            "property", min_concurrency=2, initial_concurrency=3, max_concurrency=10
+        )
+        now = fake_clock(controller)
+        for name, value in operations:
+            if name == "success":
+                controller.report_success(latency_seconds=value)
+            elif name == "overload":
+                controller.report_overload(status_code=value)
+            elif name == "failure":
+                controller.report_failure(kind=value)
+            elif name == "capacity":
+                controller.report_capacity(value)
+            else:
+                now[0] += value
+            state = controller.state
+            assert 2 <= state.current_limit <= 10
+            if state.authoritative_capacity is not None:
+                assert state.current_limit <= state.authoritative_capacity
+            for change in state.history:
+                assert change.new_limit != change.previous_limit
+
+    anyio.run(apply)
 
 
 async def _local_manager(snapshot: ResourceSnapshot) -> ResourceManager:
