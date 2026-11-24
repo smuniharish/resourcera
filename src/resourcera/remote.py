@@ -30,7 +30,7 @@ _OWNER_ERROR = (
 def _current_token() -> EventLoopToken | None:
     try:
         return anyio.lowlevel.current_token()
-    except Exception:
+    except anyio.NoEventLoopError:
         return None
 
 
